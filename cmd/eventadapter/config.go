@@ -10,9 +10,10 @@ import (
 )
 
 type Filter struct {
-	Key      string `yaml:"key"`
-	Value    string `yaml:"value"`
-	Negative bool   `yaml:"negative"`
+	Key      string   `yaml:"key"`
+	Value    string   `yaml:"value"`
+	Negative bool     `yaml:"negative"`
+	ValueIn  []string `yaml:"valueIn"`
 }
 
 type FilterExp struct {
@@ -26,19 +27,33 @@ func (t *FilterExp) UnmarshalYAML(unmarshal func(interface{}) error) error {
 		return err
 	}
 
-	t.ValueExp, err = regexp.Compile(t.Value)
-	if err != nil {
-		return fmt.Errorf("get invalid value %s. ", t.Value)
+	if t.Value == "" && len(t.ValueIn) == 0 {
+		return fmt.Errorf("value and valueIn can't be empty. ")
+	}
+
+	if t.Value != "" {
+		t.ValueExp, err = regexp.Compile(t.Value)
+		if err != nil {
+			return fmt.Errorf("get invalid value %s. ", t.Value)
+		}
 	}
 	return nil
 }
 
 func (t FilterExp) IsMatch(val string) bool {
-	ok := t.ValueExp.MatchString(val)
-	if t.Negative {
-		return !ok
+	if t.ValueExp != nil {
+		ok := t.ValueExp.MatchString(val)
+		if t.Negative {
+			return !ok
+		}
+		return ok
 	}
-	return ok
+	for _, s := range t.ValueIn {
+		if s == val {
+			return true
+		}
+	}
+	return false
 }
 
 type AdapterConfig struct {
@@ -60,8 +75,9 @@ var CurrentConfig = make([]AdapterConfig, 0)
 
 // 用于jsonPath 获取值
 type DataEvent struct {
-	Context cloudevents.EventContext `json:"context"`
-	Data    interface{}              `json:"data"`
+	Context    cloudevents.EventContext `json:"context"`
+	Data       interface{}              `json:"data"`
+	Extensions interface{}              `json:"extensions"`
 }
 
 func GetListenerKey(name, namespace string) string {

@@ -51,7 +51,8 @@ func receive(ctx context.Context, event cloudevents.Event) {
 	l.Infof("do event. ")
 
 	de := DataEvent{
-		Context: event.Context,
+		Context:    event.Context,
+		Extensions: event.Extensions(),
 	}
 	err := json.Unmarshal(event.Data(), &de.Data)
 	if err != nil {
