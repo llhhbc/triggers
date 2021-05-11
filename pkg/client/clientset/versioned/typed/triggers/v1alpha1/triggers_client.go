@@ -26,8 +26,10 @@ import (
 
 type TriggersV1alpha1Interface interface {
 	RESTClient() rest.Interface
+	ClusterInterceptorsGetter
 	ClusterTriggerBindingsGetter
 	EventListenersGetter
+	TriggersGetter
 	TriggerBindingsGetter
 	TriggerTemplatesGetter
 }
@@ -37,12 +39,20 @@ type TriggersV1alpha1Client struct {
 	restClient rest.Interface
 }
 
+func (c *TriggersV1alpha1Client) ClusterInterceptors() ClusterInterceptorInterface {
+	return newClusterInterceptors(c)
+}
+
 func (c *TriggersV1alpha1Client) ClusterTriggerBindings() ClusterTriggerBindingInterface {
 	return newClusterTriggerBindings(c)
 }
 
 func (c *TriggersV1alpha1Client) EventListeners(namespace string) EventListenerInterface {
 	return newEventListeners(c, namespace)
+}
+
+func (c *TriggersV1alpha1Client) Triggers(namespace string) TriggerInterface {
+	return newTriggers(c, namespace)
 }
 
 func (c *TriggersV1alpha1Client) TriggerBindings(namespace string) TriggerBindingInterface {

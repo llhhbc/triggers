@@ -21,7 +21,7 @@ metadata:
     app.kubernetes.io/name: controller
     app.kubernetes.io/component: controller
     app.kubernetes.io/instance: default
-    app.kubernetes.io/version: devel
+    app.kubernetes.io/version: "devel"
     app.kubernetes.io/part-of: tekton-triggers
     # tekton.dev/release value replaced with inputs.params.versionTag in triggers/tekton/publish.yaml
     triggers.tekton.dev/release: "devel"
@@ -41,7 +41,7 @@ spec:
         app.kubernetes.io/name: controller
         app.kubernetes.io/component: controller
         app.kubernetes.io/instance: default
-        app.kubernetes.io/version: devel
+        app.kubernetes.io/version: "devel"
         app.kubernetes.io/part-of: tekton-triggers
         app: tekton-triggers-controller
         triggers.tekton.dev/release: "devel"
@@ -51,12 +51,16 @@ spec:
       serviceAccountName: tekton-triggers-controller
       containers:
       - name: tekton-triggers-controller
-        image: github.com/tektoncd/triggers/cmd/controller
+        image: "ko://github.com/tektoncd/triggers/cmd/controller"
         args: [
           "-logtostderr",
           "-stderrthreshold", "INFO",
-          "-el-image", "github.com/tektoncd/triggers/cmd/eventlistenersink",
+          "-el-image", "ko://github.com/tektoncd/triggers/cmd/eventlistenersink",
           "-el-port", "8080",
+          "-el-readtimeout", "5",
+          "-el-writetimeout", "40",
+          "-el-idletimeout", "120",
+          "-el-timeouthandler", "30",
           "-period-seconds", "10",
           "-failure-threshold", "1"
         ]
@@ -71,3 +75,7 @@ spec:
           value: config-observability-triggers
         - name: METRICS_DOMAIN
           value: tekton.dev/triggers
+        securityContext:
+          allowPrivilegeEscalation: false
+          # User 65532 is the distroless nonroot user ID
+          runAsUser: 65532

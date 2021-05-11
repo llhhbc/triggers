@@ -24,6 +24,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 	rtesting "knative.dev/pkg/reconciler/testing"
 )
 
@@ -84,6 +85,18 @@ func TestGetResourcesFromClients(t *testing.T) {
 			Name:      "my-triggerTemplate2",
 		},
 	}
+	trigger1 := &v1alpha1.Trigger{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "foo",
+			Name:      "my-trigger1",
+		},
+	}
+	trigger2 := &v1alpha1.Trigger{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "foo",
+			Name:      "my-trigger2",
+		},
+	}
 	deployment1 := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: "foo",
@@ -120,6 +133,39 @@ func TestGetResourcesFromClients(t *testing.T) {
 			Name:      "such-secret",
 		},
 	}
+	pod1 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "foo",
+			Name:      "my-pod-1",
+		},
+	}
+	pod2 := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "foo",
+			Name:      "my-pod-2",
+		},
+	}
+
+	cData := &duckv1.WithPod{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Service",
+			APIVersion: "serving.knative.dev/v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "knativeservice",
+			Namespace: "foo",
+		},
+	}
+	cData1 := &duckv1.WithPod{
+		TypeMeta: metav1.TypeMeta{
+			Kind:       "Service",
+			APIVersion: "serving.knative.dev/v1",
+		},
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "knativeservice1",
+			Namespace: "foo",
+		},
+	}
 
 	tests := []struct {
 		name      string
@@ -137,8 +183,11 @@ func TestGetResourcesFromClients(t *testing.T) {
 				EventListeners:         []*v1alpha1.EventListener{eventListener1},
 				TriggerBindings:        []*v1alpha1.TriggerBinding{triggerBinding1},
 				TriggerTemplates:       []*v1alpha1.TriggerTemplate{triggerTemplate1},
+				Triggers:               []*v1alpha1.Trigger{trigger1},
 				Deployments:            []*appsv1.Deployment{deployment1},
 				Services:               []*corev1.Service{service1},
+				Pods:                   []*corev1.Pod{pod1},
+				WithPod:                []*duckv1.WithPod{cData},
 			},
 		},
 		{
@@ -149,8 +198,11 @@ func TestGetResourcesFromClients(t *testing.T) {
 				EventListeners:         []*v1alpha1.EventListener{eventListener1, eventListener2},
 				TriggerBindings:        []*v1alpha1.TriggerBinding{triggerBinding1, triggerBinding2},
 				TriggerTemplates:       []*v1alpha1.TriggerTemplate{triggerTemplate1, triggerTemplate2},
+				Triggers:               []*v1alpha1.Trigger{trigger1, trigger2},
 				Deployments:            []*appsv1.Deployment{deployment1, deployment2},
 				Services:               []*corev1.Service{service1, service2},
+				Pods:                   []*corev1.Pod{pod1, pod2},
+				WithPod:                []*duckv1.WithPod{cData, cData1},
 			},
 		},
 		{
@@ -211,6 +263,12 @@ func TestGetResourcesFromClients(t *testing.T) {
 			Resources: Resources{
 				Namespaces: []*corev1.Namespace{nsFoo},
 				Secrets:    []*corev1.Secret{secret},
+			},
+		}, {
+			name: "only pods (and namespaces)",
+			Resources: Resources{
+				Namespaces: []*corev1.Namespace{nsFoo},
+				Pods:       []*corev1.Pod{pod1},
 			},
 		},
 	}

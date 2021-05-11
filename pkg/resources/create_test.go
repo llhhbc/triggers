@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"testing"
 
+	"go.uber.org/zap/zaptest"
+
 	"github.com/google/go-cmp/cmp"
 	resourcev1 "github.com/tektoncd/pipeline/pkg/apis/resource/v1alpha1"
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
@@ -34,7 +36,6 @@ import (
 	fakedynamic "k8s.io/client-go/dynamic/fake"
 	fakekubeclientset "k8s.io/client-go/kubernetes/fake"
 	ktesting "k8s.io/client-go/testing"
-	"knative.dev/pkg/logging"
 )
 
 const (
@@ -48,7 +49,7 @@ const (
 
 func Test_FindAPIResource_error(t *testing.T) {
 	dc := fakekubeclientset.NewSimpleClientset().Discovery()
-	if _, err := FindAPIResource("v1", "Pod", dc); err == nil {
+	if _, err := findAPIResource("v1", "Pod", dc); err == nil {
 		t.Error("findAPIResource() did not return error when expected")
 	}
 }
@@ -117,7 +118,7 @@ func TestFindAPIResource(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(fmt.Sprintf("%s_%s", tt.apiVersion, tt.kind), func(t *testing.T) {
-			got, err := FindAPIResource(tt.apiVersion, tt.kind, dc)
+			got, err := findAPIResource(tt.apiVersion, tt.kind, dc)
 			if err != nil {
 				t.Errorf("findAPIResource() returned error: %s", err)
 			} else if diff := cmp.Diff(tt.want, got); diff != "" {
@@ -137,7 +138,7 @@ func TestCreateResource(t *testing.T) {
 	dynamicClient := fakedynamic.NewSimpleDynamicClient(runtime.NewScheme())
 	dynamicSet := dynamicclientset.New(tekton.WithClient(dynamicClient))
 
-	logger, _ := logging.NewLogger("", "")
+	logger := zaptest.NewLogger(t)
 
 	tests := []struct {
 		name string
@@ -193,7 +194,7 @@ func TestCreateResource(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			dynamicClient.ClearActions()
-			if err := Create(logger, tt.json, triggerName, eventID, elName, elNamespace, kubeClient.Discovery(), dynamicSet); err != nil {
+			if err := Create(logger.Sugar(), tt.json, triggerName, eventID, elName, elNamespace, kubeClient.Discovery(), dynamicSet); err != nil {
 				t.Errorf("createResource() returned error: %s", err)
 			}
 
@@ -298,10 +299,28 @@ func Test_AddLabels(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := AddLabels(tt.us, tt.labelsToAdd)
+			got, err := addLabels(tt.us, tt.labelsToAdd)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if diff := cmp.Diff(tt.want, got); diff != "" {
-				t.Errorf("AddLabels(): -want +got: %s", diff)
+				t.Errorf("addLabels(): -want +got: %s", diff)
 			}
 		})
 	}
+
+	t.Run("non-string label", func(t *testing.T) {
+		in := &unstructured.Unstructured{
+			Object: map[string]interface{}{
+				"metadata": map[string]interface{}{
+					"labels": map[string]interface{}{
+						"foo": 0,
+					},
+				},
+			},
+		}
+		if got, err := addLabels(in, map[string]string{"a": "b"}); err == nil {
+			t.Errorf("expected error, got: %v", got)
+		}
+	})
 }

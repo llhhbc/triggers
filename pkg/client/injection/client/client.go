@@ -19,7 +19,7 @@ limitations under the License.
 package client
 
 import (
-	"context"
+	context "context"
 
 	versioned "github.com/tektoncd/triggers/pkg/client/clientset/versioned"
 	rest "k8s.io/client-go/rest"
@@ -42,8 +42,13 @@ func withClient(ctx context.Context, cfg *rest.Config) context.Context {
 func Get(ctx context.Context) versioned.Interface {
 	untyped := ctx.Value(Key{})
 	if untyped == nil {
-		logging.FromContext(ctx).Panic(
-			"Unable to fetch github.com/tektoncd/triggers/pkg/client/clientset/versioned.Interface from context.")
+		if injection.GetConfig(ctx) == nil {
+			logging.FromContext(ctx).Panic(
+				"Unable to fetch github.com/tektoncd/triggers/pkg/client/clientset/versioned.Interface from context. This context is not the application context (which is typically given to constructors via sharedmain).")
+		} else {
+			logging.FromContext(ctx).Panic(
+				"Unable to fetch github.com/tektoncd/triggers/pkg/client/clientset/versioned.Interface from context.")
+		}
 	}
 	return untyped.(versioned.Interface)
 }

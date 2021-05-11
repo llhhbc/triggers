@@ -21,16 +21,14 @@ source $(git rev-parse --show-toplevel)/vendor/github.com/tektoncd/plumbing/scri
 
 cd ${REPO_ROOT_DIR}
 
+# Update when you want to pin knative.dev/pkg
 VERSION="master"
 
 # The list of dependencies that we track at HEAD and periodically
 # float forward in this repository.
 FLOATING_DEPS=(
   "knative.dev/pkg@${VERSION}"
-  "knative.dev/caching@${VERSION}"
-  "knative.dev/serving@${VERSION}"
-  "knative.dev/eventing@${VERSION}"
-  "knative.dev/eventing-contrib@${VERSION}"
+  "github.com/tektoncd/pipeline@master"
 )
 
 # Parse flags to determine any we should pass to dep.

@@ -1,61 +1,43 @@
 module github.com/tektoncd/triggers
 
-go 1.14
+go 1.15
 
 require (
 	contrib.go.opencensus.io/exporter/jaeger v0.2.0
-	contrib.go.opencensus.io/exporter/ocagent v0.6.0 // indirect
-	contrib.go.opencensus.io/exporter/stackdriver v0.12.9 // indirect
-	contrib.go.opencensus.io/exporter/zipkin v0.1.1 // indirect
 	github.com/GoogleCloudPlatform/cloud-builders/gcs-fetcher v0.0.0-20191203181535-308b93ad1f39
-	github.com/cloudevents/sdk-go v1.1.2 // indirect
-	github.com/cloudevents/sdk-go/v2 v2.0.0-preview8
+	github.com/cloudevents/sdk-go/v2 v2.1.0
 	github.com/gobuffalo/envy v1.9.0 // indirect
-	github.com/golang/protobuf v1.3.4
-	github.com/google/cel-go v0.4.2
-	github.com/google/go-cmp v0.4.0
+	github.com/golang/protobuf v1.4.3
+	github.com/google/cel-go v0.6.0
+	github.com/google/go-cmp v0.5.4
 	github.com/google/go-github/v31 v31.0.0
-	github.com/gorilla/mux v1.7.3
-	github.com/grpc-ecosystem/grpc-gateway v1.13.0 // indirect
-	github.com/openzipkin/zipkin-go v0.2.2 // indirect
-	github.com/prometheus/client_model v0.2.0 // indirect
-	github.com/robfig/cron v1.2.0 // indirect
-	github.com/tektoncd/pipeline v0.11.3
-	github.com/tektoncd/plumbing v0.0.0-20200430135134-e53521e1d887
+	github.com/google/uuid v1.2.0
+	github.com/gorilla/mux v1.7.4
+	github.com/sirupsen/logrus v1.7.0
+	github.com/spf13/cobra v1.0.0
+	github.com/tektoncd/pipeline v0.20.1-0.20210203144343-1b7a37f0d21d
+	github.com/tektoncd/plumbing v0.0.0-20201021153918-6b7e894737b5
 	github.com/tidwall/gjson v1.3.5 // indirect
 	github.com/tidwall/sjson v1.0.4
-	go.opencensus.io v0.22.1
-	go.uber.org/zap v1.13.0
-	golang.org/x/crypto v0.0.0-20200220183623-bac4c82f6975 // indirect
-	golang.org/x/xerrors v0.0.0-20191204190536-9bdfabe68543
-	google.golang.org/genproto v0.0.0-20200305110556-506484158171
-	gopkg.in/yaml.v2 v2.2.8
-	k8s.io/api v0.18.2
-	k8s.io/apimachinery v0.18.2
-	k8s.io/client-go v0.18.2
-	k8s.io/code-generator v0.17.1
-	k8s.io/klog v1.0.0
-	k8s.io/kube-openapi v0.0.0-20200121204235-bf4fb3bd569c
-	k8s.io/utils v0.0.0-20200324210504-a9aa75ae1b89 // indirect
-	knative.dev/caching v0.0.0-20200228235451-13d271455c74
-	knative.dev/eventing v0.14.0 // indirect
-	knative.dev/pkg v0.0.0-20200207155214-fef852970f43
-	sigs.k8s.io/yaml v1.2.0 // indirect
+	go.opencensus.io v0.22.5
+	go.uber.org/zap v1.16.0
+	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1
+	google.golang.org/genproto v0.0.0-20201211151036-40ec1c210f7a
+	google.golang.org/grpc v1.34.0
+	google.golang.org/protobuf v1.25.0
+	gopkg.in/yaml.v2 v2.4.0
+	k8s.io/api v0.19.7
+	k8s.io/apiextensions-apiserver v0.19.7
+	k8s.io/apimachinery v0.19.7
+	k8s.io/client-go v0.19.7
+	k8s.io/code-generator v0.19.7
+	k8s.io/kube-openapi v0.0.0-20210113233702-8566a335510f
+	knative.dev/pkg v0.0.0-20210130001831-ca02ef752ac6
+	sigs.k8s.io/yaml v1.2.0
 )
 
-// Knative deps (release-0.12)
 replace (
-	contrib.go.opencensus.io/exporter/stackdriver => contrib.go.opencensus.io/exporter/stackdriver v0.12.9-0.20191108183826-59d068f8d8ff
-	knative.dev/caching => knative.dev/caching v0.0.0-20200116200605-67bca2c83dfa
-	knative.dev/pkg => knative.dev/pkg v0.0.0-20200113182502-b8dc5fbc6d2f
-	knative.dev/pkg/vendor/github.com/spf13/pflag => github.com/spf13/pflag v1.0.5
-)
-
-// Pin k8s deps to 1.16.5
-replace (
-	k8s.io/api => k8s.io/api v0.16.5
-	k8s.io/apimachinery => k8s.io/apimachinery v0.16.5
-	k8s.io/client-go => k8s.io/client-go v0.16.5
-	k8s.io/code-generator => k8s.io/code-generator v0.16.5
-	k8s.io/gengo => k8s.io/gengo v0.0.0-20190327210449-e17681d19d3a
+	contrib.go.opencensus.io/exporter/stackdriver => contrib.go.opencensus.io/exporter/stackdriver v0.13.4
+	github.com/Azure/azure-sdk-for-go => github.com/Azure/azure-sdk-for-go v38.2.0+incompatible
+	github.com/Azure/go-autorest => github.com/Azure/go-autorest v14.2.0+incompatible
 )

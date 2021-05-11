@@ -21,7 +21,7 @@ import (
 	"github.com/google/cel-go/checker"
 	"github.com/google/cel-go/checker/decls"
 	"github.com/google/cel-go/common"
-	"github.com/google/cel-go/common/packages"
+	"github.com/google/cel-go/common/containers"
 	"github.com/google/cel-go/common/types"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
@@ -78,15 +78,14 @@ func (ast *Ast) Source() Source {
 // Env encapsulates the context necessary to perform parsing, type checking, or generation of
 // evaluable programs for different expressions.
 type Env struct {
+	Container    *containers.Container
 	declarations []*exprpb.Decl
 	macros       []parser.Macro
-	pkg          packages.Packager
 	adapter      ref.TypeAdapter
 	provider     ref.TypeProvider
+	features     map[int]bool
 	// program options tied to the environment.
 	progOpts []ProgramOption
-	// environment options, true by default.
-	enableDynamicAggregateLiterals bool
 
 	// Internal checker representation
 	chk    *checker.Env
@@ -118,13 +117,13 @@ func NewEnv(opts ...EnvOption) (*Env, error) {
 func NewCustomEnv(opts ...EnvOption) (*Env, error) {
 	registry := types.NewRegistry()
 	return (&Env{
-		declarations:                   []*exprpb.Decl{},
-		macros:                         []parser.Macro{},
-		pkg:                            packages.DefaultPackage,
-		adapter:                        registry,
-		provider:                       registry,
-		enableDynamicAggregateLiterals: true,
-		progOpts:                       []ProgramOption{},
+		declarations: []*exprpb.Decl{},
+		macros:       []parser.Macro{},
+		Container:    containers.DefaultContainer,
+		adapter:      registry,
+		provider:     registry,
+		features:     map[int]bool{},
+		progOpts:     []ProgramOption{},
 	}).configure(opts)
 }
 
@@ -141,8 +140,11 @@ func (e *Env) Check(ast *Ast) (*Ast, *Issues) {
 
 	// Construct the internal checker env, erroring if there is an issue adding the declarations.
 	e.once.Do(func() {
-		ce := checker.NewEnv(e.pkg, e.provider)
-		ce.EnableDynamicAggregateLiterals(e.enableDynamicAggregateLiterals)
+		ce := checker.NewEnv(e.Container, e.provider)
+		ce.EnableDynamicAggregateLiterals(true)
+		if e.HasFeature(FeatureDisableDynamicAggregateLiterals) {
+			ce.EnableDynamicAggregateLiterals(false)
+		}
 		err := ce.Add(e.declarations...)
 		if err != nil {
 			e.chkErr = err
@@ -154,12 +156,12 @@ func (e *Env) Check(ast *Ast) (*Ast, *Issues) {
 	if e.chkErr != nil {
 		errs := common.NewErrors(ast.Source())
 		errs.ReportError(common.NoLocation, e.chkErr.Error())
-		return nil, &Issues{errs: errs}
+		return nil, NewIssues(errs)
 	}
 
 	res, errs := checker.Check(pe, ast.Source(), e.chk)
 	if len(errs.GetErrors()) > 0 {
-		return nil, &Issues{errs: errs}
+		return nil, NewIssues(errs)
 	}
 	// Manually create the Ast to ensure that the Ast source information (which may be more
 	// detailed than the information provided by Check), is returned to the caller.
@@ -250,16 +252,28 @@ func (e *Env) Extend(opts ...EnvOption) (*Env, error) {
 		adapter = adapterReg.Copy()
 	}
 
+	featuresCopy := make(map[int]bool, len(e.features))
+	for k, v := range e.features {
+		featuresCopy[k] = v
+	}
+
 	ext := &Env{
-		declarations:                   decsCopy,
-		macros:                         macsCopy,
-		progOpts:                       progOptsCopy,
-		adapter:                        adapter,
-		enableDynamicAggregateLiterals: e.enableDynamicAggregateLiterals,
-		pkg:                            e.pkg,
-		provider:                       provider,
+		Container:    e.Container,
+		declarations: decsCopy,
+		macros:       macsCopy,
+		progOpts:     progOptsCopy,
+		adapter:      adapter,
+		features:     featuresCopy,
+		provider:     provider,
 	}
 	return ext.configure(opts)
+}
+
+// HasFeature checks whether the environment enables the given feature
+// flag, as enumerated in options.go.
+func (e *Env) HasFeature(flag int) bool {
+	_, has := e.features[flag]
+	return has
 }
 
 // Parse parses the input expression value `txt` to a Ast and/or a set of Issues.
@@ -301,6 +315,11 @@ func (e *Env) Program(ast *Ast, opts ...ProgramOption) (Program, error) {
 		optSet = mergedOpts
 	}
 	return newProgram(e, ast, optSet)
+}
+
+// SetFeature sets the given feature flag, as enumerated in options.go.
+func (e *Env) SetFeature(flag int) {
+	e.features[flag] = true
 }
 
 // TypeAdapter returns the `ref.TypeAdapter` configured for the environment.
@@ -408,8 +427,8 @@ func (i *Issues) Err() error {
 	if i == nil {
 		return nil
 	}
-	if len(i.errs.GetErrors()) > 0 {
-		return errors.New(i.errs.ToDisplayString())
+	if len(i.Errors()) > 0 {
+		return errors.New(i.String())
 	}
 	return nil
 }
@@ -427,9 +446,7 @@ func (i *Issues) Append(other *Issues) *Issues {
 	if i == nil {
 		return other
 	}
-	return &Issues{
-		errs: i.errs.Append(other.errs.GetErrors()),
-	}
+	return NewIssues(i.errs.Append(other.errs.GetErrors()))
 }
 
 // String converts the issues to a suitable display string.

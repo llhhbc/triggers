@@ -22,10 +22,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/google/uuid"
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"k8s.io/apimachinery/pkg/util/rand"
 )
 
 // uidMatch determines the uid variable within the resource template
@@ -37,93 +36,111 @@ type ResolvedTrigger struct {
 	TriggerBindings        []*triggersv1.TriggerBinding
 	ClusterTriggerBindings []*triggersv1.ClusterTriggerBinding
 	TriggerTemplate        *triggersv1.TriggerTemplate
+	BindingParams          []triggersv1.Param
 }
 
-type getTriggerBinding func(name string, options metav1.GetOptions) (*triggersv1.TriggerBinding, error)
-type getTriggerTemplate func(name string, options metav1.GetOptions) (*triggersv1.TriggerTemplate, error)
-type getClusterTriggerBinding func(name string, options metav1.GetOptions) (*triggersv1.ClusterTriggerBinding, error)
+type getTriggerBinding func(name string) (*triggersv1.TriggerBinding, error)
+type getTriggerTemplate func(name string) (*triggersv1.TriggerTemplate, error)
+type getClusterTriggerBinding func(name string) (*triggersv1.ClusterTriggerBinding, error)
 
 // ResolveTrigger takes in a trigger containing object refs to bindings and
 // templates and resolves them to their underlying values.
-func ResolveTrigger(trigger triggersv1.EventListenerTrigger, getTB getTriggerBinding, getCTB getClusterTriggerBinding, getTT getTriggerTemplate) (ResolvedTrigger, error) {
-	tb := make([]*triggersv1.TriggerBinding, 0, len(trigger.Bindings))
-	ctb := make([]*triggersv1.ClusterTriggerBinding, 0, len(trigger.Bindings))
-	for _, b := range trigger.Bindings {
-		if b.Spec != nil {
-			tb = append(tb, &triggersv1.TriggerBinding{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: b.Name,
-				},
-				Spec: *b.Spec,
-			})
-			continue
-		}
-
-		if b.Kind == triggersv1.ClusterTriggerBindingKind {
-			ctb2, err := getCTB(b.Ref, metav1.GetOptions{})
-			if err != nil {
-				return ResolvedTrigger{}, fmt.Errorf("error getting ClusterTriggerBinding %s: %w", b.Name, err)
-			}
-			ctb = append(ctb, ctb2)
-		} else {
-			tb2, err := getTB(b.Ref, metav1.GetOptions{})
-			if err != nil {
-				return ResolvedTrigger{}, fmt.Errorf("error getting TriggerBinding %s: %w", b.Name, err)
-			}
-			tb = append(tb, tb2)
-		}
-	}
-
-	ttName := trigger.Template.Name
-	tt, err := getTT(ttName, metav1.GetOptions{})
+func ResolveTrigger(trigger triggersv1.Trigger, getTB getTriggerBinding, getCTB getClusterTriggerBinding, getTT getTriggerTemplate) (ResolvedTrigger, error) {
+	bp, err := resolveBindingsToParams(trigger.Spec.Bindings, getTB, getCTB)
 	if err != nil {
-		return ResolvedTrigger{}, fmt.Errorf("error getting TriggerTemplate %s: %w", ttName, err)
+		return ResolvedTrigger{}, fmt.Errorf("failed to resolve bindings: %w", err)
 	}
-	return ResolvedTrigger{TriggerBindings: tb, ClusterTriggerBindings: ctb, TriggerTemplate: tt}, nil
-}
 
-// MergeInDefaultParams returns the params with the addition of all
-// paramSpecs that have default values and are already in the params list
-func MergeInDefaultParams(params []triggersv1.Param, paramSpecs []triggersv1.ParamSpec) []triggersv1.Param {
-	allParamsMap := map[string]string{}
-	for _, paramSpec := range paramSpecs {
-		if paramSpec.Default != nil {
-			allParamsMap[paramSpec.Name] = *paramSpec.Default
+	var resolvedTT *triggersv1.TriggerTemplate
+	if trigger.Spec.Template.Spec != nil {
+		resolvedTT = &triggersv1.TriggerTemplate{
+			ObjectMeta: metav1.ObjectMeta{}, // Unused. TODO: Just return Specs from here.
+			Spec:       *trigger.Spec.Template.Spec,
+		}
+	} else {
+		var ttName string
+		if trigger.Spec.Template.Ref != nil {
+			ttName = *trigger.Spec.Template.Ref
+		}
+		resolvedTT, err = getTT(ttName)
+		if err != nil {
+			return ResolvedTrigger{}, fmt.Errorf("error getting TriggerTemplate %s: %w", ttName, err)
 		}
 	}
-	for _, param := range params {
-		allParamsMap[param.Name] = param.Value
-	}
-	return convertParamMapToArray(allParamsMap)
+
+	return ResolvedTrigger{TriggerTemplate: resolvedTT, BindingParams: bp}, nil
 }
 
-// ApplyParamsToResourceTemplate returns the TriggerResourceTemplate with the
+// resolveBindingsToParams takes in both embedded bindings and references and returns a list of resolved Param values.ResolveBindingsToParams
+func resolveBindingsToParams(bindings []*triggersv1.TriggerSpecBinding, getTB getTriggerBinding, getCTB getClusterTriggerBinding) ([]triggersv1.Param, error) {
+	bindingParams := []triggersv1.Param{}
+	for _, b := range bindings {
+		switch {
+		case b.Name != "" && b.Value != nil:
+			bindingParams = append(bindingParams, triggersv1.Param{
+				Name:  b.Name,
+				Value: *b.Value,
+			})
+
+		case b.Ref != "" && b.Kind == triggersv1.ClusterTriggerBindingKind:
+			ctb, err := getCTB(b.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("error getting ClusterTriggerBinding %s: %w", b.Name, err)
+			}
+			bindingParams = append(bindingParams, ctb.Spec.Params...)
+
+		case b.Ref != "": // if no kind is set, assume NamespacedTriggerBinding
+			tb, err := getTB(b.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("error getting TriggerBinding %s: %w", b.Name, err)
+			}
+			bindingParams = append(bindingParams, tb.Spec.Params...)
+		default:
+			return nil, fmt.Errorf("invalid binding: %v", b)
+		}
+	}
+
+	// Check for duplicate params
+	seen := make(map[string]bool, len(bindingParams))
+	for _, p := range bindingParams {
+		if seen[p.Name] {
+			return nil, fmt.Errorf("duplicate param name: %s", p.Name)
+		}
+		seen[p.Name] = true
+	}
+	return bindingParams, nil
+}
+
+// applyParamsToResourceTemplate returns the TriggerResourceTemplate with the
 // param values substituted for all matching param variables in the template
-func ApplyParamsToResourceTemplate(params []triggersv1.Param, rt json.RawMessage) json.RawMessage {
+func applyParamsToResourceTemplate(params []triggersv1.Param, rt json.RawMessage, oldEscape bool) json.RawMessage {
 	// Assume the params are valid
 	for _, param := range params {
-		rt = applyParamToResourceTemplate(param, rt)
+		rt = applyParamToResourceTemplate(param, rt, oldEscape)
 	}
 	return rt
 }
 
 // applyParamToResourceTemplate returns the TriggerResourceTemplate with the
 // param value substituted for all matching param variables in the template
-func applyParamToResourceTemplate(param triggersv1.Param, rt json.RawMessage) json.RawMessage {
+func applyParamToResourceTemplate(param triggersv1.Param, rt json.RawMessage, oldEscape bool) json.RawMessage {
 	// Assume the param is valid
-	paramVariable := fmt.Sprintf("$(params.%s)", param.Name)
+	paramVariable := fmt.Sprintf("$(tt.params.%s)", param.Name)
 	// Escape quotes so that that JSON strings can be appended to regular strings.
 	// See #257 for discussion on this behavior.
-	paramValue := strings.Replace(param.Value, `"`, `\"`, -1)
-	return bytes.Replace(rt, []byte(paramVariable), []byte(paramValue), -1)
+	if oldEscape {
+		paramValue := strings.Replace(param.Value, `"`, `\"`, -1)
+		return bytes.Replace(rt, []byte(paramVariable), []byte(paramValue), -1)
+	}
+	return bytes.Replace(rt, []byte(paramVariable), []byte(param.Value), -1)
 }
 
-// UID generates a random string like the Kubernetes apiserver generateName metafield postfix.
-var UID = func() string { return rand.String(5) }
+// UUID generates a Universally Unique IDentifier following RFC 4122.
+var UUID = func() string { return uuid.New().String() }
 
-// ApplyUIDToResourceTemplate returns the TriggerResourceTemplate after uid replacement
+// applyUIDToResourceTemplate returns the TriggerResourceTemplate after uid replacement
 // The same uid should be used per trigger to properly address resources throughout the TriggerTemplate.
-func ApplyUIDToResourceTemplate(rt json.RawMessage, uid string) json.RawMessage {
+func applyUIDToResourceTemplate(rt json.RawMessage, uid string) json.RawMessage {
 	return bytes.Replace(rt, uidMatch, []byte(uid), -1)
 }
 
@@ -135,8 +152,8 @@ func convertParamMapToArray(paramMap map[string]string) []triggersv1.Param {
 	return params
 }
 
-// MergeBindingParams merges params across multiple bindings.
-func MergeBindingParams(bindings []*triggersv1.TriggerBinding, clusterbindings []*triggersv1.ClusterTriggerBinding) ([]triggersv1.Param, error) {
+// mergeBindingParams merges params across multiple bindings.
+func mergeBindingParams(bindings []*triggersv1.TriggerBinding, clusterbindings []*triggersv1.ClusterTriggerBinding) ([]triggersv1.Param, error) {
 	params := []triggersv1.Param{}
 	for _, b := range bindings {
 		params = append(params, b.Spec.Params...)

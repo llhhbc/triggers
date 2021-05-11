@@ -17,19 +17,22 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net/http"
-
-	"go.uber.org/zap"
+	"time"
 
 	dynamicClientset "github.com/tektoncd/triggers/pkg/client/dynamic/clientset"
 	"github.com/tektoncd/triggers/pkg/client/dynamic/clientset/tekton"
-	"github.com/tektoncd/triggers/pkg/logging"
+	"github.com/tektoncd/triggers/pkg/client/informers/externalversions"
+	triggerLogging "github.com/tektoncd/triggers/pkg/logging"
 	"github.com/tektoncd/triggers/pkg/sink"
+	"go.uber.org/zap"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"knative.dev/pkg/logging"
 	"knative.dev/pkg/signals"
 )
 
@@ -40,9 +43,15 @@ const (
 	ConfigName = "config-logging-triggers"
 )
 
+var (
+	// CacheSyncTimeout is the amount of the time we will wait for the informer cache to sync
+	// before timing out
+	cacheSyncTimeout = 1 * time.Minute
+)
+
 func main() {
 	// set up signals so we handle the first shutdown signal gracefully
-	stopCh := signals.SetupSignalHandler()
+	ctx := signals.NewContext()
 
 	clusterConfig, err := rest.InClusterConfig()
 	if err != nil {
@@ -60,7 +69,8 @@ func main() {
 	}
 	dynamicCS := dynamicClientset.New(tekton.WithClient(dynamicClient))
 
-	logger := logging.ConfigureLogging(EventListenerLogKey, ConfigName, stopCh, kubeClient)
+	logger := triggerLogging.ConfigureLogging(EventListenerLogKey, ConfigName, ctx.Done(), kubeClient)
+	ctx = logging.WithLogger(ctx, logger)
 	defer func() {
 		err := logger.Sync()
 		if err != nil {
@@ -75,9 +85,17 @@ func main() {
 		logger.Fatal(err)
 	}
 
-	sinkClients, err := sink.ConfigureClients()
+	sinkClients, err := sink.ConfigureClients(clusterConfig)
 	if err != nil {
 		logger.Fatal(err)
+	}
+
+	// Create a sharedInformer factory so that we can cache API server calls
+	factory := externalversions.NewSharedInformerFactoryWithOptions(sinkClients.TriggersClient,
+		30*time.Second, externalversions.WithNamespace(sinkArgs.ElNamespace))
+	if sinkArgs.IsMultiNS {
+		factory = externalversions.NewSharedInformerFactory(sinkClients.TriggersClient,
+			30*time.Second)
 	}
 
 	// Create EventListener Sink
@@ -91,15 +109,56 @@ func main() {
 		EventListenerNamespace: sinkArgs.ElNamespace,
 		Logger:                 logger,
 		Auth:                   sink.DefaultAuthOverride{},
+		// Register all the listers we'll need
+		EventListenerLister:         factory.Triggers().V1alpha1().EventListeners().Lister(),
+		TriggerLister:               factory.Triggers().V1alpha1().Triggers().Lister(),
+		TriggerBindingLister:        factory.Triggers().V1alpha1().TriggerBindings().Lister(),
+		ClusterTriggerBindingLister: factory.Triggers().V1alpha1().ClusterTriggerBindings().Lister(),
+		TriggerTemplateLister:       factory.Triggers().V1alpha1().TriggerTemplates().Lister(),
+		ClusterInterceptorLister:    factory.Triggers().V1alpha1().ClusterInterceptors().Lister(),
 	}
+
+	// Start and sync the informers before we start taking traffic
+	withTimeout, cancel := context.WithTimeout(ctx, cacheSyncTimeout)
+	defer cancel()
+	factory.Start(ctx.Done())
+	res := factory.WaitForCacheSync(withTimeout.Done())
+	for r, hasSynced := range res {
+		if !hasSynced {
+			logger.Fatalf("failed to sync informer for: %s", r)
+		}
+	}
+	logger.Infof("Synced informers. Starting EventListener")
 
 	// Listen and serve
 	logger.Infof("Listen and serve on port %s", sinkArgs.Port)
-	http.HandleFunc("/", r.HandleEvent)
+	mux := http.NewServeMux()
+	eventHandler := http.HandlerFunc(r.HandleEvent)
+	mux.Handle("/", r.IsValidPayload(eventHandler))
+
 	// For handling Liveness Probe
-	http.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
+	// TODO(dibyom): Livness, metrics etc. should be on a separate port
+	mux.HandleFunc("/live", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(200)
 		fmt.Fprint(w, "ok")
 	})
-	logger.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", sinkArgs.Port), nil))
+
+	srv := &http.Server{
+		Addr:         fmt.Sprintf(":%s", sinkArgs.Port),
+		ReadTimeout:  sinkArgs.ELReadTimeOut * time.Second,
+		WriteTimeout: sinkArgs.ELWriteTimeOut * time.Second,
+		IdleTimeout:  sinkArgs.ELIdleTimeOut * time.Second,
+		Handler: http.TimeoutHandler(mux,
+			sinkArgs.ELTimeOutHandler*time.Second, "EventListener Timeout!\n"),
+	}
+
+	if sinkArgs.Cert == "" && sinkArgs.Key == "" {
+		if err := srv.ListenAndServe(); err != nil {
+			logger.Fatalf("failed to start eventlistener sink: %v", err)
+		}
+	} else {
+		if err := srv.ListenAndServeTLS(sinkArgs.Cert, sinkArgs.Key); err != nil {
+			logger.Fatalf("failed to start eventlistener sink: %v", err)
+		}
+	}
 }

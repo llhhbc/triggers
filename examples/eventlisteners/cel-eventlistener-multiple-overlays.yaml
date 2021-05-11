@@ -7,13 +7,34 @@ spec:
   triggers:
     - name: cel-trig
       interceptors:
-        - cel:
-            overlays:
-            - key: extensions.truncated_sha
-              expression: "body.pull_request.head.sha.truncate(7)"
-            - key: extensions.branch_name
-              expression: "body.ref.split('/')[2]"
+        - ref:
+            name: "cel"
+          params:
+            - name: "overlays"
+              value:
+                - key: truncated_sha
+                  expression: "body.pull_request.head.sha.truncate(7)"
+                - key: branch_name
+                  expression: "body.ref.split('/')[2]"
       bindings:
-      - ref: pipeline-binding
+      - name: sha
+        value: $(extensions.truncated_sha)
+      - name: branch
+        value: $(extensions.branch_name)
       template:
-        name: pipeline-template
+        spec:
+          params:
+            - name: sha
+            - name: branch
+          resourceTemplates:
+            - apiVersion: tekton.dev/v1beta1
+              kind: TaskRun
+              metadata:
+                generateName: cel-trig-
+              spec:
+                taskSpec:
+                  steps:
+                  - image: ubuntu
+                    script: |
+                      #!/usr/bin/env bash
+                      echo "SHA is : $(tt.params.sha). Branch is $(tt.params.branch)"

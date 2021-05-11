@@ -24,10 +24,14 @@ import (
 
 // Interface provides access to all the informers in this group version.
 type Interface interface {
+	// ClusterInterceptors returns a ClusterInterceptorInformer.
+	ClusterInterceptors() ClusterInterceptorInformer
 	// ClusterTriggerBindings returns a ClusterTriggerBindingInformer.
 	ClusterTriggerBindings() ClusterTriggerBindingInformer
 	// EventListeners returns a EventListenerInformer.
 	EventListeners() EventListenerInformer
+	// Triggers returns a TriggerInformer.
+	Triggers() TriggerInformer
 	// TriggerBindings returns a TriggerBindingInformer.
 	TriggerBindings() TriggerBindingInformer
 	// TriggerTemplates returns a TriggerTemplateInformer.
@@ -45,6 +49,11 @@ func New(f internalinterfaces.SharedInformerFactory, namespace string, tweakList
 	return &version{factory: f, namespace: namespace, tweakListOptions: tweakListOptions}
 }
 
+// ClusterInterceptors returns a ClusterInterceptorInformer.
+func (v *version) ClusterInterceptors() ClusterInterceptorInformer {
+	return &clusterInterceptorInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
+}
+
 // ClusterTriggerBindings returns a ClusterTriggerBindingInformer.
 func (v *version) ClusterTriggerBindings() ClusterTriggerBindingInformer {
 	return &clusterTriggerBindingInformer{factory: v.factory, tweakListOptions: v.tweakListOptions}
@@ -53,6 +62,11 @@ func (v *version) ClusterTriggerBindings() ClusterTriggerBindingInformer {
 // EventListeners returns a EventListenerInformer.
 func (v *version) EventListeners() EventListenerInformer {
 	return &eventListenerInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
+}
+
+// Triggers returns a TriggerInformer.
+func (v *version) Triggers() TriggerInformer {
+	return &triggerInformer{factory: v.factory, namespace: v.namespace, tweakListOptions: v.tweakListOptions}
 }
 
 // TriggerBindings returns a TriggerBindingInformer.

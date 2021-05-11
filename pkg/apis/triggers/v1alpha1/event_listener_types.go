@@ -19,15 +19,15 @@ package v1alpha1
 import (
 	"fmt"
 
-	"github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
-
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"knative.dev/pkg/apis"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 	duckv1alpha1 "knative.dev/pkg/apis/duck/v1alpha1"
-	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
+	"knative.dev/pkg/apis/duck/v1beta1"
 )
 
 // Check that EventListener may be validated and defaulted.
@@ -35,6 +35,7 @@ var _ apis.Validatable = (*EventListener)(nil)
 var _ apis.Defaultable = (*EventListener)(nil)
 
 // +genclient
+// +genreconciler:krshapedlogic=false
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
 // EventListener exposes a service to accept HTTP event payloads.
@@ -56,72 +57,67 @@ type EventListener struct {
 type EventListenerSpec struct {
 	ServiceAccountName string                 `json:"serviceAccountName"`
 	Triggers           []EventListenerTrigger `json:"triggers"`
-	ServiceType        corev1.ServiceType     `json:"serviceType,omitempty"`
+	// To be removed in a later release #1020
+	DeprecatedReplicas *int32 `json:"replicas,omitempty"`
+	// To be removed in a later release #904
+	DeprecatedServiceType corev1.ServiceType `json:"serviceType,omitempty"`
+	// To be removed in a later release #904
+	DeprecatedPodTemplate PodTemplate           `json:"podTemplate,omitempty"`
+	NamespaceSelector     NamespaceSelector     `json:"namespaceSelector,omitempty"`
+	LabelSelector         *metav1.LabelSelector `json:"labelSelector,omitempty"`
+	Resources             Resources             `json:"resources,omitempty"`
+}
+
+type Resources struct {
+	KubernetesResource *KubernetesResource `json:"kubernetesResource,omitempty"`
+	CustomResource     *CustomResource     `json:"customResource,omitempty"`
+}
+
+type CustomResource struct {
+	runtime.RawExtension `json:",inline"`
+}
+
+type KubernetesResource struct {
+	Replicas           *int32             `json:"replicas,omitempty"`
+	ServiceType        corev1.ServiceType `json:"serviceType,omitempty"`
+	duckv1.WithPodSpec `json:"spec,omitempty"`
+}
+
+type PodTemplate struct {
+	// If specified, the pod's tolerations.
+	// +optional
+	Tolerations []corev1.Toleration `json:"tolerations,omitempty"`
+
+	// NodeSelector is a selector which must be true for the pod to fit on a node.
+	// Selector which must match a node's labels for the pod to be scheduled on that node.
+	// More info: https://kubernetes.io/docs/concepts/configuration/assign-pod-node/
+	// +optional
+	NodeSelector map[string]string `json:"nodeSelector,omitempty"`
 }
 
 // EventListenerTrigger represents a connection between TriggerBinding, Params,
 // and TriggerTemplate; TriggerBinding provides extracted values for
-// TriggerTemplate to then create resources from.
+// TriggerTemplate to then create resources from. TriggerRef can also be
+// provided instead of TriggerBinding, Interceptors and TriggerTemplate
 type EventListenerTrigger struct {
-	Bindings []*EventListenerBinding `json:"bindings"`
-	Template EventListenerTemplate   `json:"template"`
+	Bindings   []*EventListenerBinding `json:"bindings,omitempty"`
+	Template   *EventListenerTemplate  `json:"template,omitempty"`
+	TriggerRef string                  `json:"triggerRef,omitempty"`
 	// +optional
 	Name         string              `json:"name,omitempty"`
 	Interceptors []*EventInterceptor `json:"interceptors,omitempty"`
-	// ServiceAccount optionally associates credentials with each trigger;
+	// ServiceAccountName optionally associates credentials with each trigger;
 	// more granular authorization for
 	// who is allowed to utilize the associated pipeline
 	// vs. defaulting to whatever permissions are associated
 	// with the entire EventListener and associated sink facilitates
 	// multi-tenant model based scenarios
-	// TODO do we want to restrict this to the event listener namespace and just ask for the service account name here?
 	// +optional
-	ServiceAccount *corev1.ObjectReference `json:"serviceAccount,omitempty"`
+	ServiceAccountName string `json:"serviceAccountName,omitempty"`
 }
 
 // EventInterceptor provides a hook to intercept and pre-process events
-type EventInterceptor struct {
-	Webhook *WebhookInterceptor `json:"webhook,omitempty"`
-	GitHub  *GitHubInterceptor  `json:"github,omitempty"`
-	GitLab  *GitLabInterceptor  `json:"gitlab,omitempty"`
-	CEL     *CELInterceptor     `json:"cel,omitempty"`
-}
-
-// WebhookInterceptor provides a webhook to intercept and pre-process events
-type WebhookInterceptor struct {
-	// ObjectRef is a reference to an object that will resolve to a cluster DNS
-	// name to use as the EventInterceptor. Either objectRef or url can be specified
-	// +optional
-	ObjectRef *corev1.ObjectReference `json:"objectRef,omitempty"`
-	// Header is a group of key-value pairs that can be appended to the
-	// interceptor request headers. This allows the interceptor to make
-	// decisions specific to an EventListenerTrigger.
-	Header []v1beta1.Param `json:"header,omitempty"`
-}
-
-// GitHubInterceptor provides a webhook to intercept and pre-process events
-type GitHubInterceptor struct {
-	SecretRef  *SecretRef `json:"secretRef,omitempty"`
-	EventTypes []string   `json:"eventTypes,omitempty"`
-}
-
-// GitLabInterceptor provides a webhook to intercept and pre-process events
-type GitLabInterceptor struct {
-	SecretRef  *SecretRef `json:"secretRef,omitempty"`
-	EventTypes []string   `json:"eventTypes,omitempty"`
-}
-
-// CELInterceptor provides a webhook to intercept and pre-process events
-type CELInterceptor struct {
-	Filter   string       `json:"filter,omitempty"`
-	Overlays []CELOverlay `json:"overlays,omitempty"`
-}
-
-// CELOverlay provides a way to modify the request body using CEL expressions
-type CELOverlay struct {
-	Key        string `json:"key,omitempty"`
-	Expression string `json:"expression,omitempty"`
-}
+type EventInterceptor = TriggerInterceptor
 
 // SecretRef contains the information required to reference a single secret string
 // This is needed because the other secretRef types are not cross-namespace and do not
@@ -129,23 +125,13 @@ type CELOverlay struct {
 type SecretRef struct {
 	SecretKey  string `json:"secretKey,omitempty"`
 	SecretName string `json:"secretName,omitempty"`
-	Namespace  string `json:"namespace,omitempty"`
 }
 
 // EventListenerBinding refers to a particular TriggerBinding or ClusterTriggerBindingresource.
-type EventListenerBinding struct {
-	Name       string              `json:"name,omitempty"`
-	Kind       TriggerBindingKind  `json:"kind,omitempty"`
-	Ref        string              `json:"ref,omitempty"`
-	Spec       *TriggerBindingSpec `json:"spec,omitempty"`
-	APIVersion string              `json:"apiversion,omitempty"`
-}
+type EventListenerBinding = TriggerSpecBinding
 
 // EventListenerTemplate refers to a particular TriggerTemplate resource.
-type EventListenerTemplate struct {
-	Name       string `json:"name"`
-	APIVersion string `json:"apiversion,omitempty"`
-}
+type EventListenerTemplate = TriggerSpecTemplate
 
 // EventListenerList contains a list of TriggerBinding
 //
@@ -160,7 +146,7 @@ type EventListenerList struct {
 // EventListenerStatus holds the status of the EventListener
 // +k8s:deepcopy-gen=true
 type EventListenerStatus struct {
-	duckv1beta1.Status `json:",inline"`
+	duckv1.Status `json:",inline"`
 
 	// EventListener is Addressable. It currently exposes the service DNS
 	// address of the the EventListener sink
@@ -176,6 +162,14 @@ type EventListenerConfig struct {
 	// GeneratedResourceName is the name given to all resources reconciled by
 	// the EventListener
 	GeneratedResourceName string `json:"generatedName"`
+}
+
+// NamespaceSelector is a selector for selecting either all namespaces or a
+// list of namespaces.
+// +k8s:openapi-gen=true
+type NamespaceSelector struct {
+	// List of namespace names.
+	MatchNames []string `json:"matchNames,omitempty"`
 }
 
 // The conditions that are internally resolved by the EventListener reconciler
@@ -233,6 +227,17 @@ func (els *EventListenerStatus) SetDeploymentConditions(deploymentConditions []a
 	for _, cond := range deploymentConditions {
 		els.SetCondition(&apis.Condition{
 			Type:    apis.ConditionType(cond.Type),
+			Status:  cond.Status,
+			Reason:  cond.Reason,
+			Message: cond.Message,
+		})
+	}
+}
+
+func (els *EventListenerStatus) SetConditionsForDynamicObjects(conditions v1beta1.Conditions) {
+	for _, cond := range conditions {
+		els.SetCondition(&apis.Condition{
+			Type:    cond.Type,
 			Status:  cond.Status,
 			Reason:  cond.Reason,
 			Message: cond.Message,

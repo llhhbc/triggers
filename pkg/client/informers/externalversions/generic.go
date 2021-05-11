@@ -53,10 +53,14 @@ func (f *genericInformer) Lister() cache.GenericLister {
 func (f *sharedInformerFactory) ForResource(resource schema.GroupVersionResource) (GenericInformer, error) {
 	switch resource {
 	// Group=triggers.tekton.dev, Version=v1alpha1
+	case v1alpha1.SchemeGroupVersion.WithResource("clusterinterceptors"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Triggers().V1alpha1().ClusterInterceptors().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("clustertriggerbindings"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Triggers().V1alpha1().ClusterTriggerBindings().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("eventlisteners"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Triggers().V1alpha1().EventListeners().Informer()}, nil
+	case v1alpha1.SchemeGroupVersion.WithResource("triggers"):
+		return &genericInformer{resource: resource.GroupResource(), informer: f.Triggers().V1alpha1().Triggers().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("triggerbindings"):
 		return &genericInformer{resource: resource.GroupResource(), informer: f.Triggers().V1alpha1().TriggerBindings().Informer()}, nil
 	case v1alpha1.SchemeGroupVersion.WithResource("triggertemplates"):

@@ -1,9 +1,12 @@
 /*
 Copyright 2019 The Tekton Authors
+
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
+
     http://www.apache.org/licenses/LICENSE-2.0
+
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
 WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -33,9 +36,12 @@ const (
 	ResultResultPart = "results"
 	// TODO(#2462) use one regex across all substitutions
 	variableSubstitutionFormat = `\$\([_a-zA-Z0-9.-]+(\.[_a-zA-Z0-9.-]+)*\)`
+	// ResultNameFormat Constant used to define the the regex Result.Name should follow
+	ResultNameFormat = `^([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9]$`
 )
 
 var variableSubstitutionRegex = regexp.MustCompile(variableSubstitutionFormat)
+var resultNameFormatRegex = regexp.MustCompile(ResultNameFormat)
 
 // NewResultRefs extracts all ResultReferences from a param or a pipeline result.
 // If the ResultReference can be extracted, they are returned. Expressions which are not
@@ -94,6 +100,12 @@ func GetVarSubstitutionExpressionsForParam(param Param) ([]string, bool) {
 	return allExpressions, len(allExpressions) != 0
 }
 
+// GetVarSubstitutionExpressionsForPipelineResult extracts all the value between "$(" and ")"" for a pipeline result
+func GetVarSubstitutionExpressionsForPipelineResult(result PipelineResult) ([]string, bool) {
+	allExpressions := validateString(result.Value)
+	return allExpressions, len(allExpressions) != 0
+}
+
 func validateString(value string) []string {
 	expressions := variableSubstitutionRegex.FindAllString(value, -1)
 	if expressions == nil {
@@ -116,4 +128,28 @@ func parseExpression(substitutionExpression string) (string, string, error) {
 		return "", "", fmt.Errorf("Must be of the form %q", resultExpressionFormat)
 	}
 	return subExpressions[1], subExpressions[3], nil
+}
+
+// PipelineTaskResultRefs walks all the places a result reference can be used
+// in a PipelineTask and returns a list of any references that are found.
+func PipelineTaskResultRefs(pt *PipelineTask) []*ResultRef {
+	refs := []*ResultRef{}
+	for _, condition := range pt.Conditions {
+		for _, p := range condition.Params {
+			expressions, _ := GetVarSubstitutionExpressionsForParam(p)
+			refs = append(refs, NewResultRefs(expressions)...)
+		}
+	}
+
+	for _, p := range pt.Params {
+		expressions, _ := GetVarSubstitutionExpressionsForParam(p)
+		refs = append(refs, NewResultRefs(expressions)...)
+	}
+
+	for _, whenExpression := range pt.WhenExpressions {
+		expressions, _ := whenExpression.GetVarSubstitutionExpressions()
+		refs = append(refs, NewResultRefs(expressions)...)
+	}
+
+	return refs
 }

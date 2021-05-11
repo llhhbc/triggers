@@ -20,7 +20,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"reflect"
+	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/google/cel-go/checker/decls"
@@ -29,6 +31,7 @@ import (
 	"github.com/google/cel-go/interpreter/functions"
 	"github.com/tektoncd/triggers/pkg/interceptors"
 	"k8s.io/client-go/kubernetes"
+	"sigs.k8s.io/yaml"
 
 	triggersv1 "github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
@@ -114,6 +117,47 @@ import (
 // Examples:
 //
 //     header.canonical('X-Secret-Token').compareSecret('key', 'secret-name')
+//
+// parseJSON
+//
+// Parses a string into a map of strings to dynamic values.
+//
+//     <string>.parseJSON() -> map<string, dyn>
+//
+// Examples:
+//
+//     body.field.parseJSON().item
+//
+// parseURL
+//
+// Parses a URL (in the form of a string) into a map with keys representing the
+// elements of the URL.
+//
+//     <string>.parseURL() -> map<string, dyn>
+//
+// Examples:
+//
+//     'https://example.com/testing'.parseURL().host == 'example.com'
+//
+// parseYAML
+//
+// Parses a YAML string into a map of strings to dynamic values
+//
+// 		<string>.parseYAML() -> map<string, dyn>
+//
+// Examples:
+//
+// 		body.field.parseYAML().item
+//
+// marshalJSON
+//
+// Returns the JSON encoding of 'jsonObjectOrList'.
+//
+// 		<jsonObjectOrList>.marshalJSON() -> <string>
+//
+// Examples:
+//
+// 		body.jsonObjectOrList.marshalJSON()
 
 // Triggers creates and returns a new cel.Lib with the triggers extensions.
 func Triggers(ns string, k kubernetes.Interface) cel.EnvOption {
@@ -143,13 +187,22 @@ func (triggersLib) CompileOptions() []cel.EnvOption {
 					[]*exprpb.Type{decls.String, decls.Int}, decls.String)),
 			decls.NewFunction("compareSecret",
 				decls.NewInstanceOverload("compareSecret_string_string_string",
-					[]*exprpb.Type{decls.String, decls.String, decls.String, decls.String}, decls.String)),
+					[]*exprpb.Type{decls.String, decls.String, decls.String, decls.String}, decls.Bool)),
 			decls.NewFunction("parseJSON",
 				decls.NewInstanceOverload("parseJSON_string",
 					[]*exprpb.Type{decls.String}, mapStrDyn)),
+			decls.NewFunction("parseYAML",
+				decls.NewInstanceOverload("parseYAML_string",
+					[]*exprpb.Type{decls.String}, mapStrDyn)),
+			decls.NewFunction("parseURL",
+				decls.NewInstanceOverload("parseURL_string",
+					[]*exprpb.Type{decls.String}, mapStrDyn)),
 			decls.NewFunction("compareSecret",
 				decls.NewInstanceOverload("compareSecret_string_string",
-					[]*exprpb.Type{decls.String, decls.String, decls.String}, decls.String)))}
+					[]*exprpb.Type{decls.String, decls.String, decls.String}, decls.Bool)),
+			decls.NewFunction("marshalJSON",
+				decls.NewInstanceOverload("marshalJSON_map",
+					[]*exprpb.Type{mapStrDyn}, decls.String)))}
 }
 
 func (t triggersLib) ProgramOptions() []cel.ProgramOption {
@@ -171,8 +224,17 @@ func (t triggersLib) ProgramOptions() []cel.ProgramOption {
 				Operator: "parseJSON",
 				Unary:    parseJSONString},
 			&functions.Overload{
+				Operator: "parseYAML",
+				Unary:    parseYAMLString},
+			&functions.Overload{
+				Operator: "parseURL",
+				Unary:    parseURLString},
+			&functions.Overload{
 				Operator: "compareSecret",
 				Function: makeCompareSecret(t.defaultNS, t.client)},
+			&functions.Overload{
+				Operator: "marshalJSON",
+				Unary:    marshalJSON},
 		)}
 }
 
@@ -232,7 +294,7 @@ func decodeB64String(val ref.Val) ref.Val {
 	if err != nil {
 		return types.NewErr("failed to decode '%v' in decodeB64: %w", str, err)
 	}
-	return types.Bytes(dec)
+	return types.String(dec)
 }
 
 // makeCompareSecret creates and returns a functions.FunctionOp that wraps the
@@ -244,17 +306,8 @@ func makeCompareSecret(defaultNS string, k kubernetes.Interface) functions.Funct
 		if !ok {
 			return types.ValOrErr(compareString, "unexpected type '%v' passed to compareSecret", vals[0].Type())
 		}
-		paramCount := len(vals)
 
-		var secretNS types.String
-		if paramCount == 4 {
-			secretNS, ok = vals[3].(types.String)
-			if !ok {
-				return types.ValOrErr(secretNS, "unexpected type '%v' passed to compareSecret", vals[1].Type())
-			}
-		} else {
-			secretNS = types.String(defaultNS)
-		}
+		secretNS := types.String(defaultNS)
 
 		secretName, ok := vals[2].(types.String)
 		if !ok {
@@ -269,9 +322,11 @@ func makeCompareSecret(defaultNS string, k kubernetes.Interface) functions.Funct
 		secretRef := &triggersv1.SecretRef{
 			SecretKey:  string(secretKey),
 			SecretName: string(secretName),
-			Namespace:  string(secretNS),
 		}
-		secretToken, err := interceptors.GetSecretToken(k, secretRef, string(secretNS))
+		// GetSecretToken uses request as a cache key to cache secret lookup. Since multiple
+		// triggers execute concurrently in separate goroutines, this cache is not very effective
+		// for this use case
+		secretToken, err := interceptors.GetSecretToken(nil, k, secretRef, string(secretNS))
 		if err != nil {
 			return types.NewErr("failed to find secret '%#v' in compareSecret: %w", *secretRef, err)
 		}
@@ -292,6 +347,58 @@ func parseJSONString(val ref.Val) ref.Val {
 	return types.NewDynamicMap(types.NewRegistry(), decodedVal)
 }
 
+func parseYAMLString(val ref.Val) ref.Val {
+	str, ok := val.(types.String)
+	if !ok {
+		return types.ValOrErr(str, "unexpected type '%v' passed to parseYAML", val.Type())
+	}
+	decodedVal := map[string]interface{}{}
+	err := yaml.Unmarshal([]byte(str), &decodedVal)
+	if err != nil {
+		return types.NewErr("failed to decode '%v' in parseYAML: %w", str, err)
+	}
+	return types.NewDynamicMap(types.NewRegistry(), decodedVal)
+}
+
+func parseURLString(val ref.Val) ref.Val {
+	str, ok := val.(types.String)
+	if !ok {
+		return types.ValOrErr(str, "unexpected type '%v' passed to parseURL", val.Type())
+	}
+
+	parsed, err := url.Parse(string(str))
+	if err != nil {
+		return types.NewErr("failed to decode '%v' in parseURL: %w", str, err)
+	}
+
+	return types.NewDynamicMap(types.NewRegistry(), urlToMap(parsed))
+}
+
+func marshalJSON(val ref.Val) ref.Val {
+	var typeDesc reflect.Type
+
+	switch val.Type() {
+	case types.MapType:
+		typeDesc = mapType
+	case types.ListType:
+		typeDesc = listType
+	default:
+		return types.ValOrErr(val, "unexpected type '%v' passed to marshalJSON", val.Type())
+	}
+
+	nativeVal, err := val.ConvertToNative(typeDesc)
+	if err != nil {
+		return types.NewErr("failed to convert to native: %w", err)
+	}
+
+	marshaledVal, err := json.Marshal(nativeVal)
+	if err != nil {
+		return types.NewErr("failed to marshal to json: %w", err)
+	}
+
+	return types.String(marshaledVal)
+}
+
 func max(x, y types.Int) types.Int {
 	switch x.Compare(y) {
 	case types.IntNegOne:
@@ -301,4 +408,33 @@ func max(x, y types.Int) types.Int {
 	default:
 		return x
 	}
+}
+
+func urlToMap(u *url.URL) map[string]interface{} {
+	// This doesn't return the RawPath.
+	m := map[string]interface{}{
+		"scheme":       u.Scheme,
+		"host":         u.Host,
+		"path":         u.Path,
+		"rawQuery":     u.RawQuery,
+		"fragment":     u.Fragment,
+		"queryStrings": u.Query(),
+		"query":        flatten(u.Query()),
+	}
+	if u.User != nil {
+		pass, _ := u.User.Password()
+		m["auth"] = map[string]string{
+			"username": u.User.Username(),
+			"password": pass,
+		}
+	}
+	return m
+}
+
+func flatten(uv url.Values) map[string]string {
+	r := map[string]string{}
+	for k, v := range uv {
+		r[k] = strings.Join(v, ",")
+	}
+	return r
 }

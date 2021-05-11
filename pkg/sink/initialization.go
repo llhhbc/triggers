@@ -18,6 +18,7 @@ package sink
 
 import (
 	"flag"
+	"time"
 
 	triggersclientset "github.com/tektoncd/triggers/pkg/client/clientset/versioned"
 	"golang.org/x/xerrors"
@@ -32,6 +33,7 @@ const (
 	name        = "el-name"
 	elNamespace = "el-namespace"
 	port        = "port"
+	isMultiNS   = "is-multi-ns"
 )
 
 var (
@@ -41,6 +43,20 @@ var (
 		"The namespace of the EventListener resource for this sink.")
 	portFlag = flag.String("port", "",
 		"The port for the EventListener sink to listen on.")
+	elReadTimeOut = flag.Int64("readtimeout", 5,
+		"The read timeout for EventListener Server.")
+	elWriteTimeOut = flag.Int64("writetimeout", 40,
+		"The write timeout for EventListener Server.")
+	elIdleTimeOut = flag.Int64("idletimeout", 30,
+		"The idle timeout for EventListener Server.")
+	elTimeOutHandler = flag.Int64("timeouthandler", 5,
+		"The timeout for Timeout Handler of EventListener Server.")
+	isMultiNSFlag = flag.Bool("is-multi-ns", false,
+		"Whether EventListener serve Multiple NS.")
+	tlsCertFlag = flag.String("tls-cert", "",
+		"The filename for the TLS certificate.")
+	tlsKeyFlag = flag.String("tls-key", "",
+		"The filename for the TLS key.")
 )
 
 // Args define the arguments for Sink.
@@ -51,6 +67,20 @@ type Args struct {
 	ElNamespace string
 	// Port is the port the Sink should listen on.
 	Port string
+	// ELReadTimeOut defines the read timeout for EventListener Server
+	ELReadTimeOut time.Duration
+	// ELWriteTimeOut defines the write timeout for EventListener Server
+	ELWriteTimeOut time.Duration
+	// ELIdleTimeOut defines the read timeout for EventListener Server
+	ELIdleTimeOut time.Duration
+	// ELTimeOutHandler defines the timeout for Timeout Handler of EventListener Server
+	ELTimeOutHandler time.Duration
+	// IsMultiNS determines whether el functions as namespaced or clustered
+	IsMultiNS bool
+	// Key defines the filename for tls Key.
+	Key string
+	// Cert defines the filename for tls Cert.
+	Cert string
 }
 
 // Clients define the set of client dependencies Sink requires.
@@ -72,19 +102,23 @@ func GetArgs() (Args, error) {
 	if *portFlag == "" {
 		return Args{}, xerrors.Errorf("-%s arg not found", port)
 	}
+
 	return Args{
-		ElName:      *nameFlag,
-		ElNamespace: *namespaceFlag,
-		Port:        *portFlag,
+		ElName:           *nameFlag,
+		ElNamespace:      *namespaceFlag,
+		Port:             *portFlag,
+		IsMultiNS:        *isMultiNSFlag,
+		ELReadTimeOut:    time.Duration(*elReadTimeOut),
+		ELWriteTimeOut:   time.Duration(*elWriteTimeOut),
+		ELIdleTimeOut:    time.Duration(*elIdleTimeOut),
+		ELTimeOutHandler: time.Duration(*elTimeOutHandler),
+		Cert:             *tlsCertFlag,
+		Key:              *tlsKeyFlag,
 	}, nil
 }
 
 // ConfigureClients returns the kubernetes and triggers clientsets
-func ConfigureClients() (Clients, error) {
-	clusterConfig, err := rest.InClusterConfig()
-	if err != nil {
-		return Clients{}, xerrors.Errorf("Failed to get in cluster config: %s", err)
-	}
+func ConfigureClients(clusterConfig *rest.Config) (Clients, error) {
 	kubeClient, err := kubeclientset.NewForConfig(clusterConfig)
 	if err != nil {
 		return Clients{}, xerrors.Errorf("Failed to create KubeClient: %s", err)
@@ -93,7 +127,6 @@ func ConfigureClients() (Clients, error) {
 	if err != nil {
 		return Clients{}, xerrors.Errorf("Failed to create TriggersClient: %s", err)
 	}
-
 	return Clients{
 		DiscoveryClient: kubeClient.Discovery(),
 		RESTClient:      kubeClient.RESTClient(),

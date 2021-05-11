@@ -54,11 +54,16 @@ function install_triggers_crd() {
   echo ">> Deploying Tekton Triggers"
   ko apply -f config/ || fail_test "Tekton Triggers installation failed"
 
+  # Wait for the Interceptors CRD to be available before adding the core-interceptors
+  kubectl wait --for=condition=Established --timeout=30s crds/clusterinterceptors.triggers.tekton.dev
+  ko apply -f config/interceptors || fail_test "Core interceptors installation failed"
+
   # Make sure that eveything is cleaned up in the current namespace.
-  for res in eventlistener triggertemplate triggerbinding; do
-    kubectl delete --ignore-not-found=true ${res}.tekton.dev --all
+  for res in eventlistener triggertemplate triggerbinding clustertriggerbinding; do
+    kubectl delete --ignore-not-found=true ${res}.triggers.tekton.dev --all
   done
 
   # Wait for pods to be running in the namespaces we are deploying to
   wait_until_pods_running tekton-pipelines || fail_test "Tekton Triggers did not come up"
+
 }

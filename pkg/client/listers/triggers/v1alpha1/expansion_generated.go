@@ -18,6 +18,10 @@ limitations under the License.
 
 package v1alpha1
 
+// ClusterInterceptorListerExpansion allows custom methods to be added to
+// ClusterInterceptorLister.
+type ClusterInterceptorListerExpansion interface{}
+
 // ClusterTriggerBindingListerExpansion allows custom methods to be added to
 // ClusterTriggerBindingLister.
 type ClusterTriggerBindingListerExpansion interface{}
@@ -29,6 +33,14 @@ type EventListenerListerExpansion interface{}
 // EventListenerNamespaceListerExpansion allows custom methods to be added to
 // EventListenerNamespaceLister.
 type EventListenerNamespaceListerExpansion interface{}
+
+// TriggerListerExpansion allows custom methods to be added to
+// TriggerLister.
+type TriggerListerExpansion interface{}
+
+// TriggerNamespaceListerExpansion allows custom methods to be added to
+// TriggerNamespaceLister.
+type TriggerNamespaceListerExpansion interface{}
 
 // TriggerBindingListerExpansion allows custom methods to be added to
 // TriggerBindingLister.

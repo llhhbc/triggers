@@ -18,7 +18,7 @@ import (
 	"fmt"
 
 	"github.com/golang/protobuf/proto"
-	"github.com/google/cel-go/common/packages"
+	"github.com/google/cel-go/common/containers"
 	"github.com/google/cel-go/common/types/pb"
 	"github.com/google/cel-go/common/types/ref"
 	"github.com/google/cel-go/interpreter"
@@ -29,6 +29,20 @@ import (
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 )
 
+// These constants beginning with "Feature" enable optional behavior in
+// the library.  See the documentation for each constant to see its
+// effects, compatibility restrictions, and standard conformance.
+const (
+	_ = iota
+
+	// Disallow heterogeneous aggregate (list, map) literals.
+	// Note, it is still possible to have heterogeneous aggregates when
+	// provided as variables to the expression, as well as via conversion
+	// of well-known dynamic types, or with unchecked expressions.
+	// Affects checking.  Provides a subset of standard behavior.
+	FeatureDisableDynamicAggregateLiterals
+)
+
 // EnvOption is a functional interface for configuring the environment.
 type EnvOption func(e *Env) (*Env, error)
 
@@ -36,9 +50,6 @@ type EnvOption func(e *Env) (*Env, error)
 //
 // Clearing macros will ensure CEL expressions can only contain linear evaluation paths, as
 // comprehensions such as `all` and `exists` are enabled only via macros.
-//
-// Note: This option is a no-op when used with ClearBuiltIns, and must be used before Macros
-// if used together.
 func ClearMacros() EnvOption {
 	return func(e *Env) (*Env, error) {
 		e.macros = parser.NoMacros
@@ -68,12 +79,24 @@ func CustomTypeProvider(provider ref.TypeProvider) EnvOption {
 
 // Declarations option extends the declaration set configured in the environment.
 //
-// Note: This option must be specified after ClearBuiltIns if both are used together.
+// Note: Declarations will by default be appended to the pre-existing declaration set configured
+// for the environment. The NewEnv call builds on top of the standard CEL declarations. For a
+// purely custom set of declarations use NewCustomEnv.
 func Declarations(decls ...*exprpb.Decl) EnvOption {
 	// TODO: provide an alternative means of specifying declarations that doesn't refer
 	// to the underlying proto implementations.
 	return func(e *Env) (*Env, error) {
 		e.declarations = append(e.declarations, decls...)
+		return e, nil
+	}
+}
+
+// Features sets the given feature flags.  See list of Feature constants above.
+func Features(flags ...int) EnvOption {
+	return func(e *Env) (*Env, error) {
+		for _, flag := range flags {
+			e.SetFeature(flag)
+		}
 		return e, nil
 	}
 }
@@ -85,15 +108,12 @@ func Declarations(decls ...*exprpb.Decl) EnvOption {
 // expression, as well as via conversion of well-known dynamic types, or with unchecked
 // expressions.
 func HomogeneousAggregateLiterals() EnvOption {
-	return func(e *Env) (*Env, error) {
-		e.enableDynamicAggregateLiterals = false
-		return e, nil
-	}
+	return Features(FeatureDisableDynamicAggregateLiterals)
 }
 
 // Macros option extends the macro set configured in the environment.
 //
-// Note: This option must be specified after ClearBuiltIns and/or ClearMacros if used together.
+// Note: This option must be specified after ClearMacros if used together.
 func Macros(macros ...parser.Macro) EnvOption {
 	return func(e *Env) (*Env, error) {
 		e.macros = append(e.macros, macros...)
@@ -106,9 +126,62 @@ func Macros(macros ...parser.Macro) EnvOption {
 // If all references within an expression are relative to a protocol buffer package, then
 // specifying a container of `google.type` would make it possible to write expressions such as
 // `Expr{expression: 'a < b'}` instead of having to write `google.type.Expr{...}`.
-func Container(pkg string) EnvOption {
+func Container(name string) EnvOption {
 	return func(e *Env) (*Env, error) {
-		e.pkg = packages.NewPackage(pkg)
+		cont, err := e.Container.Extend(containers.Name(name))
+		if err != nil {
+			return nil, err
+		}
+		e.Container = cont
+		return e, nil
+	}
+}
+
+// Abbrevs configures a set of simple names as abbreviations for fully-qualified names.
+//
+// An abbreviation (abbrev for short) is a simple name that expands to a fully-qualified name.
+// Abbreviations can be useful when working with variables, functions, and especially types from
+// multiple namespaces:
+//
+//    // CEL object construction
+//    qual.pkg.version.ObjTypeName{
+//       field: alt.container.ver.FieldTypeName{value: ...}
+//    }
+//
+// Only one the qualified names above may be used as the CEL container, so at least one of these
+// references must be a long qualified name within an otherwise short CEL program. Using the
+// following abbreviations, the program becomes much simpler:
+//
+//    // CEL Go option
+//    Abbrevs("qual.pkg.version.ObjTypeName", "alt.container.ver.FieldTypeName")
+//    // Simplified Object construction
+//    ObjTypeName{field: FieldTypeName{value: ...}}
+//
+// There are a few rules for the qualified names and the simple abbreviations generated from them:
+// - Qualified names must be dot-delimited, e.g. `package.subpkg.name`.
+// - The last element in the qualified name is the abbreviation.
+// - Abbreviations must not collide with each other.
+// - The abbreviation must not collide with unqualified names in use.
+//
+// Abbreviations are distinct from container-based references in the following important ways:
+// - Abbreviations must expand to a fully-qualified name.
+// - Expanded abbreviations do not participate in namespace resolution.
+// - Abbreviation expansion is done instead of the container search for a matching identifier.
+// - Containers follow C++ namespace resolution rules with searches from the most qualified name
+//   to the least qualified name.
+// - Container references within the CEL program may be relative, and are resolved to fully
+//   qualified names at either type-check time or program plan time, whichever comes first.
+//
+// If there is ever a case where an identifier could be in both the container and as an
+// abbreviation, the abbreviation wins as this will ensure that the meaning of a program is
+// preserved between compilations even as the container evolves.
+func Abbrevs(qualifiedNames ...string) EnvOption {
+	return func(e *Env) (*Env, error) {
+		cont, err := e.Container.Extend(containers.Abbrevs(qualifiedNames...))
+		if err != nil {
+			return nil, err
+		}
+		e.Container = cont
 		return e, nil
 	}
 }
@@ -189,6 +262,16 @@ func TypeDescs(descs ...interface{}) EnvOption {
 
 // ProgramOption is a functional interface for configuring evaluation bindings and behaviors.
 type ProgramOption func(p *prog) (*prog, error)
+
+// CustomDecorator appends an InterpreterDecorator to the program.
+//
+// InterpretableDecorators can be used to inspect, alter, or replace the Program plan.
+func CustomDecorator(dec interpreter.InterpretableDecorator) ProgramOption {
+	return func(p *prog) (*prog, error) {
+		p.decorators = append(p.decorators, dec)
+		return p, nil
+	}
+}
 
 // Functions adds function overloads that extend or override the set of CEL built-ins.
 func Functions(funcs ...*functions.Overload) ProgramOption {

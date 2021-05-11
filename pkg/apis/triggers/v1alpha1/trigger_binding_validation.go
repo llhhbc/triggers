@@ -19,6 +19,7 @@ package v1alpha1
 import (
 	"context"
 
+	"k8s.io/apimachinery/pkg/util/sets"
 	"knative.dev/pkg/apis"
 )
 
@@ -29,20 +30,17 @@ func (tb *TriggerBinding) Validate(ctx context.Context) *apis.FieldError {
 
 // Validate TriggerBindingSpec.
 func (s *TriggerBindingSpec) Validate(ctx context.Context) *apis.FieldError {
-	if err := validateParams(s.Params); err != nil {
-		return err
-	}
-	return nil
+	return validateParams(s.Params)
 }
 
 func validateParams(params []Param) *apis.FieldError {
 	// Ensure there aren't multiple params with the same name.
-	seen := map[string]struct{}{}
+	seen := sets.NewString()
 	for _, param := range params {
-		if _, ok := seen[param.Name]; ok {
+		if seen.Has(param.Name) {
 			return apis.ErrMultipleOneOf("spec.params")
 		}
-		seen[param.Name] = struct{}{}
+		seen.Insert(param.Name)
 	}
 	return nil
 }

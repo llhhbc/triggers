@@ -1,6 +1,6 @@
 <!--
 ---
-linkTitle: "Exposing Event Listeners Externally"
+linkTitle: "Exposing EventListeners Externally"
 weight: 6
 ---
 -->
@@ -13,7 +13,7 @@ services can talk to it:
 ## Using an Ingress
 
 You can use an Ingress resource to expose the EventListener. The
-[`create-ingress`](./create-ingress.yaml) Tekton task can help setup an ingress
+[`create-ingress`](./getting-started/create-ingress.yaml) Tekton task can help setup an ingress
 resource using self-signed certs.
 
 **Note**: If you are using a cloud hosted Kubernetes solution such as GKE, the
@@ -27,14 +27,14 @@ The following instructions have been tested on GKE cluster running version
 services can be found
 [here](https://kubernetes.github.io/ingress-nginx/deploy/).
 
-1. First, install Nginx ingress controller:
+1. First, install Nginx ingress controller. One liner below, check the [website](https://kubernetes.github.io/ingress-nginx/deploy/#gce-gke) for more information:
    ```sh
-     kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/static/mandatory.yaml
-     kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/master/deploy/static/provider/cloud-generic.yaml
+      # Check https://kubernetes.github.io/ingress-nginx/deploy for other installation options
+      kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v0.34.1/deploy/static/provider/cloud/deploy.yaml
    ```
 2. Find the service name expose by the Eventlistener service:
    ```sh
-    kubectl get el <EVENTLISTENR_NAME> -o=jsonpath='{.status.configuration.generatedName}'
+    kubectl get el <EVENTLISTENR_NAME> -o=jsonpath='{.status.configuration.generatedName}{"\n"}'
    ```
 3. Create the Ingress resource. A sample Ingress is below. Check the docs
    [here](https://kubernetes.github.io/ingress-nginx/user-guide/nginx-configuration/)
@@ -45,7 +45,6 @@ apiVersion: extensions/v1beta1
 kind: Ingress
 metadata:
   name: ingress-resource
-  namespace: getting-started
   annotations:
     kubernetes.io/ingress.class: nginx
     nginx.ingress.kubernetes.io/ssl-redirect: "false"
@@ -55,7 +54,7 @@ spec:
         paths:
           - path: /
             backend:
-              serviceName: getting-started-listener-b8rqz # REPLACE WITH YOUR SERVICE NAME FROM STEP 2
+              serviceName: EVENT_LISTENER_SERVICE_NAME # REPLACE WITH YOUR SERVICE NAME FROM STEP 2
               servicePort: 8080
 ```
 

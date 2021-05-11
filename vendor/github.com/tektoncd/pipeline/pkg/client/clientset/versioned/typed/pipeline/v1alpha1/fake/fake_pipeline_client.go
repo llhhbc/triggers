@@ -1,5 +1,5 @@
 /*
-Copyright 2019 The Tekton Authors
+Copyright 2020 The Tekton Authors
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -42,6 +42,10 @@ func (c *FakeTektonV1alpha1) Pipelines(namespace string) v1alpha1.PipelineInterf
 
 func (c *FakeTektonV1alpha1) PipelineRuns(namespace string) v1alpha1.PipelineRunInterface {
 	return &FakePipelineRuns{c, namespace}
+}
+
+func (c *FakeTektonV1alpha1) Runs(namespace string) v1alpha1.RunInterface {
+	return &FakeRuns{c, namespace}
 }
 
 func (c *FakeTektonV1alpha1) Tasks(namespace string) v1alpha1.TaskInterface {

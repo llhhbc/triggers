@@ -33,9 +33,9 @@ and an `error` to indicate if there was an error.
 package test
 
 import (
-	"time"
-
+	"context"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -60,7 +60,7 @@ func WaitFor(waitFunc wait.ConditionFunc) error {
 // is within this set
 func eventListenerReady(t *testing.T, c *clients, namespace, name string) wait.ConditionFunc {
 	return func() (bool, error) {
-		el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Get(name, metav1.GetOptions{})
+		el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
 			t.Log("EventListener not found")
 			return false, nil
@@ -85,7 +85,7 @@ func eventListenerReady(t *testing.T, c *clients, namespace, name string) wait.C
 // deploymentNotExist returns a function that checks if the specified Deployment does not exist
 func deploymentNotExist(t *testing.T, c *clients, namespace, name string) wait.ConditionFunc {
 	return func() (bool, error) {
-		_, err := c.KubeClient.AppsV1().Deployments(namespace).Get(name, metav1.GetOptions{})
+		_, err := c.KubeClient.AppsV1().Deployments(namespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
 			return true, nil
 		}
@@ -96,7 +96,7 @@ func deploymentNotExist(t *testing.T, c *clients, namespace, name string) wait.C
 // serviceNotExist returns a function that checks if the specified Service does not exist
 func serviceNotExist(t *testing.T, c *clients, namespace, name string) wait.ConditionFunc {
 	return func() (bool, error) {
-		_, err := c.KubeClient.CoreV1().Services(namespace).Get(name, metav1.GetOptions{})
+		_, err := c.KubeClient.CoreV1().Services(namespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
 			return true, nil
 		}
@@ -107,7 +107,7 @@ func serviceNotExist(t *testing.T, c *clients, namespace, name string) wait.Cond
 // pipelineResourceExist returns a function that checks if the specified PipelineResource exists
 func pipelineResourceExist(t *testing.T, c *clients, namespace, name string) wait.ConditionFunc {
 	return func() (bool, error) {
-		_, err := c.ResourceClient.TektonV1alpha1().PipelineResources(namespace).Get(name, metav1.GetOptions{})
+		_, err := c.ResourceClient.TektonV1alpha1().PipelineResources(namespace).Get(context.Background(), name, metav1.GetOptions{})
 		if err != nil && errors.IsNotFound(err) {
 			return false, nil
 		}

@@ -19,6 +19,8 @@ package parser
 import (
 	"fmt"
 	"strconv"
+	"strings"
+	"sync"
 
 	"github.com/antlr/antlr4/runtime/Go/antlr"
 
@@ -69,12 +71,30 @@ type parser struct {
 	macros map[string]Macro
 }
 
-var _ gen.CELVisitor = (*parser)(nil)
+var (
+	_ gen.CELVisitor = (*parser)(nil)
+
+	lexerPool *sync.Pool = &sync.Pool{
+		New: func() interface{} {
+			return gen.NewCELLexer(nil)
+		},
+	}
+
+	parserPool *sync.Pool = &sync.Pool{
+		New: func() interface{} {
+			return gen.NewCELParser(nil)
+		},
+	}
+)
 
 func (p *parser) parse(expression string) *exprpb.Expr {
-	stream := antlr.NewInputStream(expression)
-	lexer := gen.NewCELLexer(stream)
-	prsr := gen.NewCELParser(antlr.NewCommonTokenStream(lexer, 0))
+	lexer := lexerPool.Get().(*gen.CELLexer)
+	lexer.SetInputStream(antlr.NewInputStream(expression))
+	defer lexerPool.Put(lexer)
+
+	prsr := parserPool.Get().(*gen.CELParser)
+	prsr.SetInputStream(antlr.NewCommonTokenStream(lexer, 0))
+	defer parserPool.Put(prsr)
 
 	lexer.RemoveErrorListeners()
 	prsr.RemoveErrorListeners()
@@ -436,10 +456,15 @@ func (p *parser) VisitMapInitializerList(ctx *gen.MapInitializerListContext) int
 // Visit a parse tree produced by CELParser#Int.
 func (p *parser) VisitInt(ctx *gen.IntContext) interface{} {
 	text := ctx.GetTok().GetText()
+	base := 10
+	if strings.HasPrefix(text, "0x") {
+		base = 16
+		text = text[2:]
+	}
 	if ctx.GetSign() != nil {
 		text = ctx.GetSign().GetText() + text
 	}
-	i, err := strconv.ParseInt(text, 10, 64)
+	i, err := strconv.ParseInt(text, base, 64)
 	if err != nil {
 		return p.reportError(ctx, "invalid int literal")
 	}
@@ -451,7 +476,12 @@ func (p *parser) VisitUint(ctx *gen.UintContext) interface{} {
 	text := ctx.GetTok().GetText()
 	// trim the 'u' designator included in the uint literal.
 	text = text[:len(text)-1]
-	i, err := strconv.ParseUint(text, 10, 64)
+	base := 10
+	if strings.HasPrefix(text, "0x") {
+		base = 16
+		text = text[2:]
+	}
+	i, err := strconv.ParseUint(text, base, 64)
 	if err != nil {
 		return p.reportError(ctx, "invalid uint literal")
 	}

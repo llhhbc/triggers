@@ -18,38 +18,86 @@ package v1alpha1
 
 import (
 	"context"
+
+	"knative.dev/pkg/logging"
+	"knative.dev/pkg/ptr"
 )
 
 // SetDefaults sets the defaults on the object.
 func (el *EventListener) SetDefaults(ctx context.Context) {
 	if IsUpgradeViaDefaulting(ctx) {
 		// set defaults
-		for i := range el.Spec.Triggers {
-			defaultBindings(&el.Spec.Triggers[i])
-			// TODO: Remove this in future release #564.
-			defaultMandatoryRef((&el.Spec.Triggers[i]))
+		if el.Spec.Resources.KubernetesResource != nil {
+			if el.Spec.Resources.KubernetesResource.Replicas != nil && *el.Spec.Resources.KubernetesResource.Replicas == 0 {
+				*el.Spec.Resources.KubernetesResource.Replicas = 1
+			}
+		}
+
+		for i, t := range el.Spec.Triggers {
+			triggerSpecBindingArray(el.Spec.Triggers[i].Bindings).defaultBindings()
+			for _, ti := range t.Interceptors {
+				ti.defaultInterceptorKind()
+				if err := ti.updateCoreInterceptors(); err != nil {
+					// The err only happens due to malformed JSON and should never really happen
+					// We can't return an error here, so print out the error
+					logger := logging.FromContext(ctx)
+					logger.Errorf("failed to setDefaults for trigger: %s; err: %s", t.Name, err)
+				}
+			}
+		}
+		// Remove Deprecated Resource Fields
+		// To be removed in a later release #904
+		el.Spec.updatePodTemplate()
+		el.Spec.updateServiceType()
+		// To be removed in a later release #1020
+		el.Spec.updateReplicas()
+	}
+}
+
+// To be Removed in a later release #1020
+func (spec *EventListenerSpec) updateReplicas() {
+	if spec.DeprecatedReplicas != nil {
+		if *spec.DeprecatedReplicas == 0 {
+			if spec.Resources.KubernetesResource == nil {
+				spec.Resources.KubernetesResource = &KubernetesResource{}
+			}
+			spec.Resources.KubernetesResource.Replicas = ptr.Int32(1)
+			spec.DeprecatedReplicas = nil
+		} else if *spec.DeprecatedReplicas > 0 {
+			if spec.Resources.KubernetesResource == nil {
+				spec.Resources.KubernetesResource = &KubernetesResource{}
+			}
+			spec.Resources.KubernetesResource.Replicas = spec.DeprecatedReplicas
+			spec.DeprecatedReplicas = nil
 		}
 	}
 }
 
-// set default TriggerBinding kind for Bindings
-func defaultBindings(t *EventListenerTrigger) {
-	if len(t.Bindings) > 0 {
-		for _, b := range t.Bindings {
-			if b.Kind == "" {
-				b.Kind = NamespacedTriggerBindingKind
-			}
+// To be Removed in a later release #904
+func (spec *EventListenerSpec) updatePodTemplate() {
+	if spec.DeprecatedPodTemplate.NodeSelector != nil {
+		if spec.Resources.KubernetesResource == nil {
+			spec.Resources.KubernetesResource = &KubernetesResource{}
 		}
+		spec.Resources.KubernetesResource.Template.Spec.NodeSelector = spec.DeprecatedPodTemplate.NodeSelector
+		spec.DeprecatedPodTemplate.NodeSelector = nil
+	}
+	if spec.DeprecatedPodTemplate.Tolerations != nil {
+		if spec.Resources.KubernetesResource == nil {
+			spec.Resources.KubernetesResource = &KubernetesResource{}
+		}
+		spec.Resources.KubernetesResource.Template.Spec.Tolerations = spec.DeprecatedPodTemplate.Tolerations
+		spec.DeprecatedPodTemplate.Tolerations = nil
 	}
 }
 
-// set default TriggerBinding kind for Bindings
-func defaultMandatoryRef(t *EventListenerTrigger) {
-	if len(t.Bindings) > 0 {
-		for _, b := range t.Bindings {
-			if b.Ref == "" && b.Spec == nil && b.Name != "" {
-				b.Ref = b.Name
-			}
+// To be Removed in a later release #904
+func (spec *EventListenerSpec) updateServiceType() {
+	if spec.DeprecatedServiceType != "" {
+		if spec.Resources.KubernetesResource == nil {
+			spec.Resources.KubernetesResource = &KubernetesResource{}
 		}
+		spec.Resources.KubernetesResource.ServiceType = spec.DeprecatedServiceType
+		spec.DeprecatedServiceType = ""
 	}
 }

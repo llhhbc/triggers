@@ -30,6 +30,7 @@ import (
 	pipelinev1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1beta1"
 	"github.com/tektoncd/triggers/pkg/apis/triggers/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	"knative.dev/pkg/apis"
 )
 
 func TestWebHookInterceptor(t *testing.T) {
@@ -48,6 +49,10 @@ func TestWebHookInterceptor(t *testing.T) {
 		}
 		if r.Header.Get("Param-Header") != "val" {
 			http.Error(w, "Expected header does not match", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get(webhookURLHeader) != "http://doesnotmatter.example.com" {
+			http.Error(w, "Expected webhookURLHeader does not match", http.StatusBadRequest)
 			return
 		}
 		// Return new values back in the response. It is expected for interceptors
@@ -89,7 +94,7 @@ func TestWebHookInterceptor(t *testing.T) {
 	resPayload, _ := ioutil.ReadAll(resp.Body)
 	defer resp.Body.Close()
 	if diff := cmp.Diff(wantPayload, resPayload); diff != "" {
-		t.Errorf("response payload: %s", diff)
+		t.Errorf("response payload (-want, +got) = %s", diff)
 	}
 
 	// Check headers.
@@ -144,37 +149,47 @@ func TestGetURI(t *testing.T) {
 	var eventListenerNs = "default"
 	tcs := []struct {
 		name     string
-		ref      corev1.ObjectReference
+		ref      v1alpha1.WebhookInterceptor
 		expected string
 		wantErr  bool
 	}{{
 		name: "namespace specified",
-		ref: corev1.ObjectReference{
-			Kind:       "Service",
-			Name:       "foo",
-			APIVersion: "v1",
-			Namespace:  "bar",
-		},
+		ref: v1alpha1.WebhookInterceptor{
+			ObjectRef: &corev1.ObjectReference{
+				Kind:       "Service",
+				Name:       "foo",
+				APIVersion: "v1",
+				Namespace:  "bar",
+			}},
 		expected: "http://foo.bar.svc/",
 		wantErr:  false,
 	}, {
 		name: "no namespace",
-		ref: corev1.ObjectReference{
-			Kind:       "Service",
-			Name:       "foo",
-			APIVersion: "v1",
-		},
+		ref: v1alpha1.WebhookInterceptor{
+			ObjectRef: &corev1.ObjectReference{
+				Kind:       "Service",
+				Name:       "foo",
+				APIVersion: "v1",
+			}},
 		expected: "http://foo.default.svc/",
 		wantErr:  false,
 	}, {
 		name: "non services",
-		ref: corev1.ObjectReference{
-			Kind:       "Blah",
-			Name:       "foo",
-			APIVersion: "v1",
-		},
+		ref: v1alpha1.WebhookInterceptor{
+			ObjectRef: &corev1.ObjectReference{
+				Kind:       "Blah",
+				Name:       "foo",
+				APIVersion: "v1",
+			}},
 		expected: "",
 		wantErr:  true,
+	}, {
+		name: "webhook interceptor with url",
+		ref: v1alpha1.WebhookInterceptor{
+			URL: apis.HTTP("foo.default.svc"),
+		},
+		expected: "http://foo.default.svc",
+		wantErr:  false,
 	}}
 
 	for _, tc := range tcs {
@@ -269,7 +284,7 @@ func Test_addInterceptorHeaders(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			addInterceptorHeaders(tt.args.header, tt.args.headerParams)
 			if diff := cmp.Diff(tt.want, tt.args.header); diff != "" {
-				t.Errorf("addInterceptorHeaders() Diff: -want +got: %s", diff)
+				t.Errorf("addInterceptorHeaders (-want, +got) = %s", diff)
 			}
 		})
 	}

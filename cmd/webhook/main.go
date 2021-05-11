@@ -37,9 +37,11 @@ import (
 
 var types = map[schema.GroupVersionKind]resourcesemantics.GenericCRD{
 	v1alpha1.SchemeGroupVersion.WithKind("ClusterTriggerBinding"): &v1alpha1.ClusterTriggerBinding{},
+	v1alpha1.SchemeGroupVersion.WithKind("ClusterInterceptor"):    &v1alpha1.ClusterInterceptor{},
 	v1alpha1.SchemeGroupVersion.WithKind("EventListener"):         &v1alpha1.EventListener{},
 	v1alpha1.SchemeGroupVersion.WithKind("TriggerBinding"):        &v1alpha1.TriggerBinding{},
 	v1alpha1.SchemeGroupVersion.WithKind("TriggerTemplate"):       &v1alpha1.TriggerTemplate{},
+	v1alpha1.SchemeGroupVersion.WithKind("Trigger"):               &v1alpha1.Trigger{},
 }
 
 func NewDefaultingAdmissionController(ctx context.Context, cmw configmap.Watcher) *controller.Impl {
@@ -117,7 +119,11 @@ func main() {
 		SecretName:  secretName,
 	})
 
-	sharedmain.MainWithContext(ctx, "webhook",
+	// NOTE(afrittoli) - we should have the name "webhook-triggers"
+	// configurable. Once the change is done on knative/pkg side
+	// knative/eventing#4530 we can inherit it from it
+	sharedmain.WebhookMainWithConfig(ctx, "webhook-triggers",
+		sharedmain.ParseAndGetConfigOrDie(),
 		certificates.NewController,
 		NewDefaultingAdmissionController,
 		NewValidationAdmissionController,

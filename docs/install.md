@@ -1,89 +1,67 @@
 <!--
 ---
-linkTitle: "Installation"
+linkTitle: "Setting Up Tekton Triggers"
 weight: 2
 ---
 -->
-# Installing Tekton Triggers
+# Setting Up Tekton Triggers
 
-Use this page to add the component to an existing Kubernetes cluster.
+Follow the steps below to set up an official release of Tekton Triggers on your Kubernetes cluster.
+If you want to test Triggers from `HEAD`, see the
+[Tekton Developer Guide](https://github.com/tektoncd/triggers/blob/main/DEVELOPMENT.md#install-triggers).
 
-- [Pre-requisites](#pre-requisites)
-- [Versions](#versions)
-- [Installing Tekton Triggers](#installing-tekton-triggers-1)
+## Prerequisites
 
-## Pre-requisites
+You must satisfy the following prerequisties to set up Tekton Triggers:
 
-1.  A Kubernetes cluster version 1.15 or later (_if you don't have an existing
-    cluster_):
+* You must have a Kubernetes Cluster running Kubernetes 1.18 or above.
 
-    ```bash
-    # Example cluster creation command on GKE
-    gcloud container clusters create $CLUSTER_NAME \
-      --zone=$CLUSTER_ZONE
-    ```
+  You can use [`kind`](https://kind.sigs.k8s.io/) to quickly create a local cluster with RBAC enabled for testing purposes:
 
-1.  Grant cluster-admin permissions to the current user:
+  * Install `kind` as described in [Installation](https://kind.sigs.k8s.io/docs/user/quick-start/#installation).
 
-    ```bash
-    kubectl create clusterrolebinding cluster-admin-binding \
-    --clusterrole=cluster-admin \
-    --user=$(gcloud config get-value core/account)
-    ```
+  * Create a cluster as described in [Creating a Cluster](https://kind.sigs.k8s.io/docs/user/quick-start/#creating-a-cluster).
 
-    _See
-    [Role-based access control](https://cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control#prerequisites_for_using_role-based_access_control)
-    for more information_.
+* You must have Tekton Pipelines installed on your Kubernetes cluster.
 
-1.  Install Tekton Pipelines. You can install the latest version using the
-    command below or follow the
-    [pipeline installation guide](https://github.com/tektoncd/pipeline/blob/master/docs/install.md):
+  For instructions, see [Installing Tekton Pipelines](https://github.com/tektoncd/pipeline/blob/master/docs/install.md).
 
-    ```bash
-    kubectl apply --filename https://storage.googleapis.com/tekton-releases/pipeline/latest/release.yaml
-    ```
+* You must grant the `cluster-admin` privilege to the user with which you installed Tekton Pipelines.
 
-## Versions
+  For instructions, see [Role-based access control](https://cloud.google.com/kubernetes-engine/docs/how-to/role-based-access-control#prerequisites_for_using_role-based_access_control).
 
-The versions of Tekton Triggers available are:
+## Installing Tekton Triggers on Your Cluster
 
-- [Officially released versions](https://github.com/tektoncd/triggers/releases),
-  e.g. `v0.1.0`
-- `HEAD` - To install the most recent, unreleased code in the repo see
-  [the development guide](https://github.com/tektoncd/triggers/blob/master/DEVELOPMENT.md#install-triggers)
+1. Log on to your Kubernetes cluster as the user with which you installed Tekton Pipelines.
 
-## Installing Tekton Triggers
-
-To add the Tekton Triggers component to an existing cluster:
-
-1.  Run the
-    [`kubectl apply`](https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#apply)
-    command to install [Tekton Triggers](https://github.com/tektoncd/triggers)
-    and its dependencies:
+1.  Use the [`kubectl apply`](https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#apply) command to install the latest release of Tekton Triggers and its dependencies:
 
     ```bash
     kubectl apply --filename https://storage.googleapis.com/tekton-releases/triggers/latest/release.yaml
     ```
 
-    _Previous versions will be available at `previous/$VERSION_NUMBER`, e.g.
-    https://storage.googleapis.com/tekton-releases/triggers/previous/v0.1.0/release.yaml_
-
-1.  Run the
-    [`kubectl get`](https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#get)
-    command to monitor the Tekton Triggers components until all of the components
-    show a `STATUS` of `Running`:
+    To install a specific release of Tekton Triggers, replace `latest` with the desired version number as shown in the following example:
 
     ```bash
-    kubectl get pods --namespace tekton-pipelines
+    kubectl apply -f https://storage.googleapis.com/tekton-releases/triggers/previous/v0.1.0/release.yaml
     ```
 
-    Tip: Instead of running the `kubectl get` command multiple times, you can
-    append the `--watch` flag to view the component's status updates in real
-    time. Use CTRL + C to exit watch mode.
+    To install a nightly release, use the following command:
 
-You are now ready to create and run Tekton Triggers:
+    ```bash
+    kubectl apply --filename https://storage.googleapis.com/tekton-releases-nightly/triggers/latest/release.yaml
+    ```
 
-- See [Tekton Triggers Getting Started Guide](./getting-started/README.md) to
-  get started.
-- Look at the
-  [examples](https://github.com/tektoncd/triggers/tree/master/examples)
+1.  Monitor the installation using the [`kubectl get`](https://kubernetes.io/docs/reference/generated/kubectl/kubectl-commands#get)
+    command:
+
+    ```bash
+    kubectl get pods --namespace tekton-pipelines --watch
+    ```
+
+1. When all Tekton Triggers components report a status of `Running` press CTRL+C to stop monitoring.
+
+You are now ready to configure Tekton Triggers for your workflow. For instructions, see the following:
+
+- [Tekton Triggers Getting Started Guide](./getting-started/)
+- [Tekton Triggers code examples](https://github.com/tektoncd/triggers/tree/main/examples)

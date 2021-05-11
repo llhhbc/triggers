@@ -21,7 +21,7 @@ metadata:
     app.kubernetes.io/name: webhook
     app.kubernetes.io/component: webhook
     app.kubernetes.io/instance: default
-    app.kubernetes.io/version: devel
+    app.kubernetes.io/version: "devel"
     app.kubernetes.io/part-of: tekton-triggers
     # tekton.dev/release value replaced with inputs.params.versionTag in triggers/tekton/publish.yaml
     triggers.tekton.dev/release: "devel"
@@ -41,19 +41,19 @@ spec:
         app.kubernetes.io/name: webhook
         app.kubernetes.io/component: webhook
         app.kubernetes.io/instance: default
-        app.kubernetes.io/version: devel
+        app.kubernetes.io/version: "devel"
         app.kubernetes.io/part-of: tekton-triggers
         app: tekton-triggers-webhook
         triggers.tekton.dev/release: "devel"
         # version value replaced with inputs.params.versionTag in triggers/tekton/publish.yaml
         version: "devel"
     spec:
-      serviceAccountName: tekton-triggers-controller
+      serviceAccountName: tekton-triggers-webhook
       containers:
       - name: webhook
         # This is the Go import path for the binary that is containerized
         # and substituted here.
-        image: github.com/tektoncd/triggers/cmd/webhook
+        image: "ko://github.com/tektoncd/triggers/cmd/webhook"
         env:
         - name: SYSTEM_NAMESPACE
           valueFrom:
@@ -74,3 +74,7 @@ spec:
           containerPort: 8008
         - name: https-webhook
           containerPort: 8443
+        securityContext:
+          allowPrivilegeEscalation: false
+          # User 65532 is the distroless nonroot user ID
+          runAsUser: 65532

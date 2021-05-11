@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"knative.dev/pkg/apis"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 	duckv1alpha1 "knative.dev/pkg/apis/duck/v1alpha1"
 )
 
@@ -31,11 +32,20 @@ type EventListenerOp func(*v1alpha1.EventListener)
 // EventListenerSpecOp is an operation which modifies the EventListenerSpec.
 type EventListenerSpecOp func(*v1alpha1.EventListenerSpec)
 
+// EventListenerPodTemplateOp is an operation which modifies the PodTemplate.
+type EventListenerPodTemplateOp func(*v1alpha1.PodTemplate)
+
 // EventListenerStatusOp is an operation which modifies the EventListenerStatus.
 type EventListenerStatusOp func(*v1alpha1.EventListenerStatus)
 
 // EventListenerTriggerOp is an operation which modifies the Trigger.
 type EventListenerTriggerOp func(*v1alpha1.EventListenerTrigger)
+
+// EventListenerKubernetesResourceOp is an operation which modifies the Kubernetes Resources.
+type EventListenerKubernetesResourceOp func(*v1alpha1.KubernetesResource)
+
+// EventListenerResourceOp is an operation which modifies the EventListener spec Resources.
+type EventListenerResourceOp func(*v1alpha1.Resources)
 
 // EventInterceptorOp is an operation which modifies the EventInterceptor.
 type EventInterceptorOp func(*v1alpha1.EventInterceptor)
@@ -82,10 +92,49 @@ func EventListenerSpec(ops ...EventListenerSpecOp) EventListenerOp {
 	}
 }
 
-// EventListenerServiceAccount sets the specified ServiceAccount of the EventListener.
+// EventListenerServiceAccount sets the specified ServiceAccountName of the EventListener.
 func EventListenerServiceAccount(saName string) EventListenerSpecOp {
 	return func(spec *v1alpha1.EventListenerSpec) {
 		spec.ServiceAccountName = saName
+	}
+}
+
+// EventListenerReplicas sets the specified Replicas of the EventListener.
+func EventListenerReplicas(replicas int32) EventListenerSpecOp {
+	return func(spec *v1alpha1.EventListenerSpec) {
+		spec.DeprecatedReplicas = &replicas
+	}
+}
+
+// EventListenerPodTemplate sets the specified pod template of the EventListener.
+func EventListenerPodTemplate(podTemplate v1alpha1.PodTemplate) EventListenerSpecOp {
+	return func(spec *v1alpha1.EventListenerSpec) {
+		spec.DeprecatedPodTemplate = podTemplate
+	}
+}
+
+// EventListenerPodTemplateSpec creates an PodTemplate.
+// Any number of EventListenerPodTemplateOp modifiers can be passed to transform it.
+func EventListenerPodTemplateSpec(ops ...EventListenerPodTemplateOp) v1alpha1.PodTemplate {
+	pt := v1alpha1.PodTemplate{}
+	for _, op := range ops {
+		op(&pt)
+	}
+
+	return pt
+}
+
+// EventListenerPodTemplateTolerations sets the specified Tolerations of the EventListener PodTemplate.
+func EventListenerPodTemplateTolerations(tolerations []corev1.Toleration) EventListenerPodTemplateOp {
+	return func(pt *v1alpha1.PodTemplate) {
+		pt.Tolerations = tolerations
+	}
+}
+
+// EventListenerPodTemplateNodeSelector sets the specified NodeSelector of the EventListener PodTemplate.
+func EventListenerPodTemplateNodeSelector(nodeSelector map[string]string) EventListenerPodTemplateOp {
+	return func(pt *v1alpha1.PodTemplate) {
+		pt.NodeSelector = nodeSelector
 	}
 }
 
@@ -93,7 +142,27 @@ func EventListenerServiceAccount(saName string) EventListenerSpecOp {
 // Any number of EventListenerTriggerOp modifiers can be passed to create/modify it.
 func EventListenerTrigger(ttName, apiVersion string, ops ...EventListenerTriggerOp) EventListenerSpecOp {
 	return func(spec *v1alpha1.EventListenerSpec) {
-		spec.Triggers = append(spec.Triggers, Trigger(ttName, apiVersion, ops...))
+		t := v1alpha1.EventListenerTrigger{
+			Template: &v1alpha1.EventListenerTemplate{
+				Ref:        &ttName,
+				APIVersion: apiVersion,
+			},
+		}
+
+		for _, op := range ops {
+			op(&t)
+		}
+
+		spec.Triggers = append(spec.Triggers, t)
+	}
+}
+
+// EventListenerTriggerRef adds an EventListenerTrigger with TriggerRef
+// to the EventListenerSpec Triggers.
+func EventListenerTriggerRef(trName string) EventListenerSpecOp {
+	return func(spec *v1alpha1.EventListenerSpec) {
+		spec.Triggers = append(spec.Triggers,
+			v1alpha1.EventListenerTrigger{TriggerRef: trName})
 	}
 }
 
@@ -142,24 +211,6 @@ func NewAddressable(hostname string) *duckv1alpha1.Addressable {
 	return addressable
 }
 
-// Trigger creates an EventListenerTrigger. Any number of EventListenerTriggerOp
-// modifiers can be passed to create/modify it. For creating an EventListenerBinding
-// you have to pass a EventListenerTriggerOp
-func Trigger(ttName, apiVersion string, ops ...EventListenerTriggerOp) v1alpha1.EventListenerTrigger {
-	t := v1alpha1.EventListenerTrigger{
-		Template: v1alpha1.EventListenerTemplate{
-			Name:       ttName,
-			APIVersion: apiVersion,
-		},
-	}
-
-	for _, op := range ops {
-		op(&t)
-	}
-
-	return t
-}
-
 // EventListenerTriggerName adds a Name to the Trigger in EventListenerSpec Triggers.
 func EventListenerTriggerName(name string) EventListenerTriggerOp {
 	return func(trigger *v1alpha1.EventListenerTrigger) {
@@ -167,21 +218,17 @@ func EventListenerTriggerName(name string) EventListenerTriggerOp {
 	}
 }
 
-// EventListenerTriggerServiceAccount set the specified ServiceAccount of the EventListenerTrigger.
+// EventListenerTriggerServiceAccount set the specified ServiceAccountName of the EventListenerTrigger.
 func EventListenerTriggerServiceAccount(saName, namespace string) EventListenerTriggerOp {
 	return func(trigger *v1alpha1.EventListenerTrigger) {
-		trigger.ServiceAccount = &corev1.ObjectReference{
-			Namespace: saName,
-			Name:      namespace,
-		}
+		trigger.ServiceAccountName = saName
 	}
 }
 
 // EventListenerTriggerBinding adds a Binding to the Trigger in EventListenerSpec Triggers.
-func EventListenerTriggerBinding(ref, kind, name, apiVersion string, ops ...TriggerBindingSpecOp) EventListenerTriggerOp {
+func EventListenerTriggerBinding(ref, kind, apiVersion string) EventListenerTriggerOp {
 	return func(trigger *v1alpha1.EventListenerTrigger) {
 		binding := &v1alpha1.EventListenerBinding{
-			Name:       name,
 			APIVersion: apiVersion,
 		}
 
@@ -193,12 +240,6 @@ func EventListenerTriggerBinding(ref, kind, name, apiVersion string, ops ...Trig
 
 			if kind == "TriggerBinding" || kind == "" {
 				binding.Kind = v1alpha1.NamespacedTriggerBindingKind
-			}
-		}
-		if len(ops) != 0 {
-			binding.Spec = &v1alpha1.TriggerBindingSpec{}
-			for _, op := range ops {
-				op(binding.Spec)
 			}
 		}
 		trigger.Bindings = append(trigger.Bindings, binding)
@@ -251,7 +292,7 @@ func EventInterceptorParam(name, value string) EventInterceptorOp {
 func EventListenerCELInterceptor(filter string, ops ...EventInterceptorOp) EventListenerTriggerOp {
 	return func(t *v1alpha1.EventListenerTrigger) {
 		i := &v1alpha1.EventInterceptor{
-			CEL: &v1alpha1.CELInterceptor{
+			DeprecatedCEL: &v1alpha1.CELInterceptor{
 				Filter: filter,
 			},
 		}
@@ -264,11 +305,52 @@ func EventListenerCELInterceptor(filter string, ops ...EventInterceptorOp) Event
 
 func EventListenerCELOverlay(key, expression string) EventInterceptorOp {
 	return func(i *v1alpha1.EventInterceptor) {
-		if i.CEL != nil {
-			i.CEL.Overlays = append(i.CEL.Overlays, v1alpha1.CELOverlay{
+		if i.DeprecatedCEL != nil {
+			i.DeprecatedCEL.Overlays = append(i.DeprecatedCEL.Overlays, v1alpha1.CELOverlay{
 				Key:        key,
 				Expression: expression,
 			})
 		}
+	}
+}
+
+// EventListenerNamespaceSelectorMatchNames sets the specified selector for the EventListener.
+func EventListenerNamespaceSelectorMatchNames(ns []string) EventListenerSpecOp {
+	return func(spec *v1alpha1.EventListenerSpec) {
+		spec.NamespaceSelector.MatchNames = ns
+	}
+}
+
+// EventListenerResources set specified resources to the EventListener.
+func EventListenerResources(ops ...EventListenerResourceOp) EventListenerSpecOp {
+	return func(spec *v1alpha1.EventListenerSpec) {
+		spec.Resources = v1alpha1.Resources{}
+		for _, op := range ops {
+			op(&spec.Resources)
+		}
+	}
+}
+
+// EventListenerKubernetesResources set specified Kubernetes resource to the EventListener.
+func EventListenerKubernetesResources(ops ...EventListenerKubernetesResourceOp) EventListenerResourceOp {
+	return func(spec *v1alpha1.Resources) {
+		spec.KubernetesResource = &v1alpha1.KubernetesResource{}
+		for _, op := range ops {
+			op(spec.KubernetesResource)
+		}
+	}
+}
+
+// EventListenerPodSpec sets the specified podSpec duck type to the EventListener.
+func EventListenerPodSpec(podSpec duckv1.WithPodSpec) EventListenerKubernetesResourceOp {
+	return func(spec *v1alpha1.KubernetesResource) {
+		spec.WithPodSpec = podSpec
+	}
+}
+
+// EventListenerServiceType sets the specified service type to the EventListener.
+func EventListenerServiceType(svcType string) EventListenerKubernetesResourceOp {
+	return func(spec *v1alpha1.KubernetesResource) {
+		spec.ServiceType = corev1.ServiceType(svcType)
 	}
 }

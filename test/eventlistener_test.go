@@ -20,15 +20,20 @@ package test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
 	"net/http"
-	"os/exec"
+	"net/url"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
-	"time"
+
+	"knative.dev/pkg/ptr"
+
+	"k8s.io/client-go/kubernetes"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/google/go-cmp/cmp/cmpopts"
@@ -39,10 +44,15 @@ import (
 	bldr "github.com/tektoncd/triggers/test/builder"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/clientcmd"
+	"k8s.io/client-go/tools/portforward"
+	"k8s.io/client-go/transport/spdy"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
 	knativetest "knative.dev/pkg/test"
 )
 
@@ -54,19 +64,67 @@ const (
 	examplePRJsonFilename = "pr.json"
 )
 
-func loadExamplePREventBytes() ([]byte, error) {
+func loadExamplePREventBytes(t *testing.T) []byte {
+	t.Helper()
 	path := filepath.Join("testdata", examplePRJsonFilename)
 	bytes, err := ioutil.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("couldn't load testdata example PullRequest event data: %v", err)
+		t.Fatalf("Couldn't load test data example PullREquest event data: %v", err)
 	}
-	return bytes, nil
+	return bytes
+}
+
+func impersonateRBAC(t *testing.T, sa, namespace string, kubeClient kubernetes.Interface) {
+	impersonateName := fmt.Sprintf("impersonate-%s-defaultSA", namespace)
+	role := &rbacv1.Role{
+		ObjectMeta: metav1.ObjectMeta{Name: impersonateName, Namespace: namespace},
+		Rules: []rbacv1.PolicyRule{
+			{
+				Verbs:           []string{"impersonate"},
+				APIGroups:       []string{""},
+				Resources:       []string{"serviceaccounts"},
+				ResourceNames:   nil,
+				NonResourceURLs: nil,
+			},
+		},
+	}
+	_, err := kubeClient.RbacV1().Roles(namespace).Get(context.Background(), impersonateName, metav1.GetOptions{})
+	if err == nil || errors.IsNotFound(err) {
+		_, err := kubeClient.RbacV1().Roles(namespace).Create(context.Background(), role, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("impersonate role creation failed namespace %q: %s", namespace, err)
+		}
+	} else {
+		t.Fatalf("Pre-check for impersonate failed namespace %q: %s", namespace, err)
+	}
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{Name: impersonateName, Namespace: namespace},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      sa,
+				Namespace: namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			APIGroup: "rbac.authorization.k8s.io",
+			Kind:     "Role",
+			Name:     impersonateName,
+		},
+	}
+	_, err = kubeClient.RbacV1().RoleBindings(namespace).Get(context.Background(), impersonateName, metav1.GetOptions{})
+	if err == nil || errors.IsNotFound(err) {
+		_, err := kubeClient.RbacV1().RoleBindings(namespace).Create(context.Background(), roleBinding, metav1.CreateOptions{})
+		if err != nil {
+			t.Fatalf("View rolebinding creation failed namespace %q: %s", namespace, err)
+		}
+	} else {
+		t.Fatalf("Pre-check for view rolebinding failed namespace %q: %s", namespace, err)
+	}
 }
 
 func TestEventListenerCreate(t *testing.T) {
 	c, namespace := setup(t)
-	t.Parallel()
-
 	defer cleanup(t, c, namespace, "my-eventlistener")
 	knativetest.CleanupOnInterrupt(func() { cleanup(t, c, namespace, "my-eventlistener") }, t.Logf)
 
@@ -82,7 +140,7 @@ func TestEventListenerCreate(t *testing.T) {
 			Name:      "pr1",
 			Namespace: namespace,
 			Labels: map[string]string{
-				"$(params.oneparam)": "$(params.oneparam)",
+				"$(tt.params.oneparam)": "$(tt.params.oneparam)",
 			},
 		},
 		Spec: v1alpha1.PipelineResourceSpec{
@@ -93,7 +151,6 @@ func TestEventListenerCreate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error marshalling PipelineResource 1: %s", err)
 	}
-
 	// This is a templated resource, which does not have a namespace.
 	// This is defaulted to the EventListener namespace.
 	pr2 := v1alpha1.PipelineResource{
@@ -104,27 +161,29 @@ func TestEventListenerCreate(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "pr2",
 			Labels: map[string]string{
-				"$(params.twoparamname)": "$(params.twoparamvalue)",
+				"$(tt.params.twoparamname)": "$(tt.params.twoparamvalue)",
 			},
 		},
 		Spec: v1alpha1.PipelineResourceSpec{
 			Type: "git",
 			Params: []v1alpha1.ResourceParam{
-				{Name: "license", Value: "$(params.license)"},
-				{Name: "header", Value: "$(params.header)"},
-				{Name: "prmessage", Value: "$(params.prmessage)"},
+				{Name: "license", Value: "$(tt.params.license)"},
+				{Name: "header", Value: "$(tt.params.header)"},
+				{Name: "prmessage", Value: "$(tt.params.prmessage)"},
 			},
 		},
 	}
-
 	pr2Bytes, err := json.Marshal(pr2)
 	if err != nil {
 		t.Fatalf("Error marshalling ResourceTemplate PipelineResource 2: %s", err)
 	}
 
 	// TriggerTemplate
-	tt, err := c.TriggersClient.TriggersV1alpha1().TriggerTemplates(namespace).Create(
+	tt, err := c.TriggersClient.TriggersV1alpha1().TriggerTemplates(namespace).Create(context.Background(),
 		bldr.TriggerTemplate("my-triggertemplate", "",
+			bldr.TriggerTemplateMeta(
+				bldr.Annotation("triggers.tekton.dev/old-escape-quotes", "true"),
+			),
 			bldr.TriggerTemplateSpec(
 				bldr.TriggerTemplateParam("oneparam", "", ""),
 				bldr.TriggerTemplateParam("twoparamname", "", ""),
@@ -135,34 +194,34 @@ func TestEventListenerCreate(t *testing.T) {
 				bldr.TriggerResourceTemplate(runtime.RawExtension{Raw: pr1Bytes}),
 				bldr.TriggerResourceTemplate(runtime.RawExtension{Raw: pr2Bytes}),
 			),
-		),
+		), metav1.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Error creating TriggerTemplate: %s", err)
 	}
 
 	// TriggerBinding
-	tb, err := c.TriggersClient.TriggersV1alpha1().TriggerBindings(namespace).Create(
+	tb, err := c.TriggersClient.TriggersV1alpha1().TriggerBindings(namespace).Create(context.Background(),
 		bldr.TriggerBinding("my-triggerbinding", "",
 			bldr.TriggerBindingSpec(
 				bldr.TriggerBindingParam("oneparam", "$(body.action)"),
 				bldr.TriggerBindingParam("twoparamname", "$(body.pull_request.state)"),
 				bldr.TriggerBindingParam("prmessage", "$(body.pull_request.body)"),
 			),
-		),
+		), metav1.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Error creating TriggerBinding: %s", err)
 	}
 
 	// ClusterTriggerBinding
-	ctb, err := c.TriggersClient.TriggersV1alpha1().ClusterTriggerBindings().Create(
+	ctb, err := c.TriggersClient.TriggersV1alpha1().ClusterTriggerBindings().Create(context.Background(),
 		bldr.ClusterTriggerBinding("my-clustertriggerbinding",
 			bldr.ClusterTriggerBindingSpec(
 				bldr.TriggerBindingParam("license", "$(body.repository.license)"),
 				bldr.TriggerBindingParam("header", "$(header)"),
 			),
-		),
+		), metav1.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Error creating ClusterTriggerBinding: %s", err)
@@ -170,21 +229,21 @@ func TestEventListenerCreate(t *testing.T) {
 
 	// ServiceAccount + Role + RoleBinding to authorize the creation of our
 	// templated resources
-	sa, err := c.KubeClient.CoreV1().ServiceAccounts(namespace).Create(
+	sa, err := c.KubeClient.CoreV1().ServiceAccounts(namespace).Create(context.Background(),
 		&corev1.ServiceAccount{
 			ObjectMeta: metav1.ObjectMeta{Name: "my-serviceaccount"},
-		},
+		}, metav1.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Error creating ServiceAccount: %s", err)
 	}
-	_, err = c.KubeClient.RbacV1().ClusterRoles().Create(
+	_, err = c.KubeClient.RbacV1().ClusterRoles().Create(context.Background(),
 		&rbacv1.ClusterRole{
 			ObjectMeta: metav1.ObjectMeta{Name: "my-role"},
 			Rules: []rbacv1.PolicyRule{{
 				APIGroups: []string{triggersv1.GroupName},
-				Resources: []string{"clustertriggerbindings", "eventlisteners", "triggerbindings", "triggertemplates"},
-				Verbs:     []string{"get"},
+				Resources: []string{"clustertriggerbindings", "eventlisteners", "clusterinterceptors", "triggerbindings", "triggertemplates", "triggers"},
+				Verbs:     []string{"get", "list", "watch"},
 			}, {
 				APIGroups: []string{"tekton.dev"},
 				Resources: []string{"pipelineresources"},
@@ -195,12 +254,12 @@ func TestEventListenerCreate(t *testing.T) {
 				Verbs:     []string{"get", "list", "watch"},
 			},
 			},
-		},
+		}, metav1.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Error creating Role: %s", err)
 	}
-	_, err = c.KubeClient.RbacV1().ClusterRoleBindings().Create(
+	_, err = c.KubeClient.RbacV1().ClusterRoleBindings().Create(context.Background(),
 		&rbacv1.ClusterRoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "my-rolebinding"},
 			Subjects: []rbacv1.Subject{{
@@ -213,30 +272,62 @@ func TestEventListenerCreate(t *testing.T) {
 				Kind:     "ClusterRole",
 				Name:     "my-role",
 			},
-		},
+		}, metav1.CreateOptions{},
 	)
 	if err != nil {
 		t.Fatalf("Error creating RoleBinding: %s", err)
 	}
+	impersonateRBAC(t, sa.Name, namespace, c.KubeClient)
 
-	// EventListener
-	el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Create(
-		bldr.EventListener("my-eventlistener", namespace,
-			bldr.EventListenerMeta(
-				bldr.Label("triggers", "eventlistener"),
-			),
-			bldr.EventListenerSpec(
-				bldr.EventListenerServiceAccount(sa.Name),
-				bldr.EventListenerTrigger(tt.Name, "",
-					bldr.EventListenerTriggerBinding(tb.Name, "", tb.Name, "v1alpha1"),
-					bldr.EventListenerTriggerBinding(ctb.Name, "ClusterTriggerBinding", ctb.Name, "v1alpha1"),
-				),
-			),
-		))
+	el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Create(context.Background(), &triggersv1.EventListener{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "my-eventlistener",
+			Namespace: namespace,
+		},
+		Spec: triggersv1.EventListenerSpec{
+			Triggers: []triggersv1.EventListenerTrigger{{
+				Bindings: []*triggersv1.EventListenerBinding{{
+					Ref:  tb.Name,
+					Kind: triggersv1.NamespacedTriggerBindingKind,
+				}, {
+					Ref:  ctb.Name,
+					Kind: triggersv1.ClusterTriggerBindingKind,
+				}},
+				Template: &triggersv1.EventListenerTemplate{
+					Ref: ptr.String(tt.Name),
+				},
+				Interceptors: []*triggersv1.EventInterceptor{{
+					Ref: triggersv1.InterceptorRef{Name: "cel"},
+					Params: []triggersv1.InterceptorParams{{
+						Name:  "filter",
+						Value: ToV1JSON(t, `body.action == "edited"`),
+					}},
+				}},
+			}},
+			Resources: triggersv1.Resources{
+				KubernetesResource: &triggersv1.KubernetesResource{
+					Replicas: ptr.Int32(3),
+					WithPodSpec: duckv1.WithPodSpec{
+						Template: duckv1.PodSpecable{
+							Spec: corev1.PodSpec{
+								ServiceAccountName: sa.Name,
+								NodeSelector:       map[string]string{"beta.kubernetes.io/os": "linux"},
+								Tolerations: []corev1.Toleration{{
+									Key:      "key",
+									Operator: "Equal",
+									Value:    "value",
+									Effect:   "NoSchedule",
+								}},
+							},
+						},
+					},
+				},
+			},
+		},
+	}, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Failed to create EventListener: %s", err)
 	}
-
 	// Verify the EventListener to be ready
 	if err := WaitFor(eventListenerReady(t, c, namespace, el.Name)); err != nil {
 		t.Fatalf("EventListener not ready: %s", err)
@@ -244,10 +335,7 @@ func TestEventListenerCreate(t *testing.T) {
 	t.Log("EventListener is ready")
 
 	// Load the example pull request event data
-	eventBodyJSON, err := loadExamplePREventBytes()
-	if err != nil {
-		t.Fatalf("Couldn't load test data: %v", err)
-	}
+	eventBodyJSON := loadExamplePREventBytes(t)
 
 	// Event body & Expected ResourceTemplates after instantiation
 	wantPr1 := v1alpha1.PipelineResource{
@@ -292,32 +380,61 @@ func TestEventListenerCreate(t *testing.T) {
 		},
 	}
 
-	labelSelector := fields.SelectorFromSet(eventReconciler.GenerateResourceLabels(el.Name)).String()
+	labelSelector := fields.SelectorFromSet(eventReconciler.GenerateResourceLabels(el.Name, eventReconciler.DefaultStaticResourceLabels)).String()
 	// Grab EventListener sink pods
-	sinkPods, err := c.KubeClient.CoreV1().Pods(namespace).List(metav1.ListOptions{LabelSelector: labelSelector})
+	sinkPods, err := c.KubeClient.CoreV1().Pods(namespace).List(context.Background(), metav1.ListOptions{LabelSelector: labelSelector})
 	if err != nil {
 		t.Fatalf("Error listing EventListener sink pods: %s", err)
 	}
 
 	// ElPort forward sink pod for http request
-	portString := strconv.Itoa(*eventReconciler.ElPort)
+	portString := strconv.Itoa(8000)
 	podName := sinkPods.Items[0].Name
-	cmd := exec.Command("kubectl", "port-forward", podName, "-n", namespace, fmt.Sprintf("%s:%s", portString, portString))
-	err = cmd.Start()
-	if err != nil {
-		t.Fatalf("Error starting port-forward command: %s", err)
-	}
-	if cmd.Process == nil {
-		t.Fatalf("Error starting command. Process is nil")
-	}
-	defer func() {
-		if err = cmd.Process.Kill(); err != nil {
-			t.Fatalf("Error killing port-forward process: %s", err)
-		}
-	}()
-	// Wait for port forward to take effect
-	time.Sleep(5 * time.Second)
+	stopChan, errChan := make(chan struct{}, 1), make(chan error, 1)
 
+	defer func() {
+		close(stopChan)
+	}()
+	go func(stopChan chan struct{}, errChan chan error) {
+		config, err := clientcmd.BuildConfigFromFlags("", knativetest.Flags.Kubeconfig)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		roundTripper, upgrader, err := spdy.RoundTripperFor(config)
+		if err != nil {
+			errChan <- err
+			return
+		}
+
+		path := fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/portforward", namespace, podName)
+		hostIP := strings.TrimPrefix(config.Host, "https://")
+		serverURL := url.URL{Scheme: "https", Path: path, Host: hostIP}
+		dialer := spdy.NewDialer(upgrader, &http.Client{Transport: roundTripper}, http.MethodPost, &serverURL)
+		out, errOut := new(Buffer), new(Buffer)
+		readyChan := make(chan struct{}, 1)
+		forwarder, err := portforward.New(dialer, []string{portString}, stopChan, readyChan, out, errOut)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		go func() {
+			for range readyChan {
+			}
+			if len(errOut.String()) != 0 {
+				errChan <- fmt.Errorf("%s", errOut)
+			}
+			close(errChan)
+		}()
+		if err = forwarder.ForwardPorts(); err != nil { // This locks until stopChan is closed.
+			errChan <- err
+			return
+		}
+	}(stopChan, errChan)
+
+	if err := <-errChan; err != nil {
+		t.Fatalf("Forwarding stream of data failed:: %v", err)
+	}
 	// Send POST request to EventListener sink
 	req, err := http.NewRequest("POST", fmt.Sprintf("http://127.0.0.1:%s", portString), bytes.NewBuffer(eventBodyJSON))
 	if err != nil {
@@ -351,7 +468,7 @@ func TestEventListenerCreate(t *testing.T) {
 		if err = WaitFor(pipelineResourceExist(t, c, namespace, wantPr.Name)); err != nil {
 			t.Fatalf("Failed to create ResourceTemplate %s: %s", wantPr.Name, err)
 		}
-		gotPr, err := c.ResourceClient.TektonV1alpha1().PipelineResources(namespace).Get(wantPr.Name, metav1.GetOptions{})
+		gotPr, err := c.ResourceClient.TektonV1alpha1().PipelineResources(namespace).Get(context.Background(), wantPr.Name, metav1.GetOptions{})
 		if err != nil {
 			t.Errorf("Error getting ResourceTemplate: %s: %s", wantPr.Name, err)
 		}
@@ -380,24 +497,21 @@ func TestEventListenerCreate(t *testing.T) {
 		},
 	}
 
-	_, err = c.KubeClient.CoreV1().ServiceAccounts(namespace).Create(triggerSA)
+	_, err = c.KubeClient.CoreV1().ServiceAccounts(namespace).Create(context.Background(), triggerSA, metav1.CreateOptions{})
 	if err != nil {
 		t.Fatalf("Error creating trigger SA: %s", err.Error())
 	}
 
 	if err := WaitFor(func() (bool, error) {
-		el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Get(el.Name, metav1.GetOptions{})
+		el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Get(context.Background(), el.Name, metav1.GetOptions{})
 		if err != nil {
 			return false, nil
 		}
 		for i, trigger := range el.Spec.Triggers {
-			trigger.ServiceAccount = &corev1.ObjectReference{
-				Namespace: namespace,
-				Name:      userWithoutPermissions,
-			}
+			trigger.ServiceAccountName = userWithoutPermissions
 			el.Spec.Triggers[i] = trigger
 		}
-		_, err = c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Update(el)
+		_, err = c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Update(context.Background(), el, metav1.UpdateOptions{})
 		if err != nil {
 			return false, nil
 		}
@@ -427,18 +541,15 @@ func TestEventListenerCreate(t *testing.T) {
 
 	// now set the trigger SA to the original one, should not get a 401/403
 	if err := WaitFor(func() (bool, error) {
-		el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Get(el.Name, metav1.GetOptions{})
+		el, err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Get(context.Background(), el.Name, metav1.GetOptions{})
 		if err != nil {
 			return false, nil
 		}
 		for i, trigger := range el.Spec.Triggers {
-			trigger.ServiceAccount = &corev1.ObjectReference{
-				Namespace: namespace,
-				Name:      sa.Name,
-			}
+			trigger.ServiceAccountName = sa.Name
 			el.Spec.Triggers[i] = trigger
 		}
-		_, err = c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Update(el)
+		_, err = c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Update(context.Background(), el, metav1.UpdateOptions{})
 		if err != nil {
 			return false, nil
 		}
@@ -508,7 +619,7 @@ func cleanup(t *testing.T, c *clients, namespace, elName string) {
 	t.Helper()
 	tearDown(t, c, namespace)
 	// Delete EventListener
-	err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Delete(elName, &metav1.DeleteOptions{})
+	err := c.TriggersClient.TriggersV1alpha1().EventListeners(namespace).Delete(context.Background(), elName, metav1.DeleteOptions{})
 	if err != nil {
 		t.Fatalf("Failed to delete EventListener: %s", err)
 	}
@@ -528,13 +639,13 @@ func cleanup(t *testing.T, c *clients, namespace, elName string) {
 
 	// Cleanup cluster-scoped resources
 	t.Logf("Deleting cluster-scoped resources")
-	if err := c.KubeClient.RbacV1().ClusterRoles().Delete("my-role", &metav1.DeleteOptions{}); err != nil {
+	if err := c.KubeClient.RbacV1().ClusterRoles().Delete(context.Background(), "my-role", metav1.DeleteOptions{}); err != nil {
 		t.Errorf("Failed to delete clusterrole my-role: %s", err)
 	}
-	if err := c.KubeClient.RbacV1().ClusterRoleBindings().Delete("my-rolebinding", &metav1.DeleteOptions{}); err != nil {
+	if err := c.KubeClient.RbacV1().ClusterRoleBindings().Delete(context.Background(), "my-rolebinding", metav1.DeleteOptions{}); err != nil {
 		t.Errorf("Failed to delete clusterrolebinding my-rolebinding: %s", err)
 	}
-	if err := c.TriggersClient.TriggersV1alpha1().ClusterTriggerBindings().Delete("my-clustertriggerbinding", &metav1.DeleteOptions{}); err != nil {
+	if err := c.TriggersClient.TriggersV1alpha1().ClusterTriggerBindings().Delete(context.Background(), "my-clustertriggerbinding", metav1.DeleteOptions{}); err != nil {
 		t.Errorf("Failed to delete clustertriggerbinding my-clustertriggerbinding: %s", err)
 	}
 }

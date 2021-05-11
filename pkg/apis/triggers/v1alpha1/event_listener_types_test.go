@@ -25,7 +25,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"knative.dev/pkg/apis"
-	duckv1beta1 "knative.dev/pkg/apis/duck/v1beta1"
+	duckv1 "knative.dev/pkg/apis/duck/v1"
+	"knative.dev/pkg/apis/duck/v1beta1"
 )
 
 func TestSetGetCondition(t *testing.T) {
@@ -173,8 +174,8 @@ func TestSetDeploymentConditions(t *testing.T) {
 		}},
 		initialStatus: &EventListenerStatus{},
 		expectedStatus: &EventListenerStatus{
-			Status: duckv1beta1.Status{
-				Conditions: duckv1beta1.Conditions{
+			Status: duckv1.Status{
+				Conditions: duckv1.Conditions{
 					apis.Condition{
 						Type:    apis.ConditionType(appsv1.DeploymentAvailable),
 						Status:  corev1.ConditionTrue,
@@ -199,8 +200,8 @@ func TestSetDeploymentConditions(t *testing.T) {
 		}},
 		initialStatus: &EventListenerStatus{},
 		expectedStatus: &EventListenerStatus{
-			Status: duckv1beta1.Status{
-				Conditions: duckv1beta1.Conditions{
+			Status: duckv1.Status{
+				Conditions: duckv1.Conditions{
 					apis.Condition{
 						Type:    apis.ConditionType(appsv1.DeploymentAvailable),
 						Status:  corev1.ConditionTrue,
@@ -230,8 +231,8 @@ func TestSetDeploymentConditions(t *testing.T) {
 			Message: "Message",
 		}},
 		initialStatus: &EventListenerStatus{
-			Status: duckv1beta1.Status{
-				Conditions: duckv1beta1.Conditions{
+			Status: duckv1.Status{
+				Conditions: duckv1.Conditions{
 					apis.Condition{
 						Type:    apis.ConditionType(appsv1.DeploymentReplicaFailure),
 						Status:  corev1.ConditionTrue,
@@ -242,8 +243,8 @@ func TestSetDeploymentConditions(t *testing.T) {
 			},
 		},
 		expectedStatus: &EventListenerStatus{
-			Status: duckv1beta1.Status{
-				Conditions: duckv1beta1.Conditions{
+			Status: duckv1.Status{
+				Conditions: duckv1.Conditions{
 					apis.Condition{
 						Type:    apis.ConditionType(appsv1.DeploymentAvailable),
 						Status:  corev1.ConditionTrue,
@@ -267,8 +268,18 @@ func TestSetDeploymentConditions(t *testing.T) {
 			if !equality.Semantic.DeepEqual(tests[i].expectedStatus, tests[i].initialStatus) {
 				t.Error("SetDeploymentConditions() equality mismatch. Ignore semantic time mismatch")
 				diff := cmp.Diff(tests[i].expectedStatus, tests[i].initialStatus)
-				t.Errorf("Diff request body: -want +got: %s", diff)
+				t.Errorf("Diff request body (-want +got) = %s", diff)
 			}
 		})
 	}
+}
+
+func TestSetConditionsForDynamicObjects(t *testing.T) {
+	var status EventListenerStatus
+	status.SetConditionsForDynamicObjects(v1beta1.Conditions{{
+		Type:    apis.ConditionReady,
+		Status:  corev1.ConditionTrue,
+		Reason:  "Reason",
+		Message: "Message",
+	}})
 }

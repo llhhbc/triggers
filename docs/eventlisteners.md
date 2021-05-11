@@ -14,13 +14,942 @@ and apply them to [TriggerTemplates](./triggertemplates.md) in order to create
 Tekton resources. In addition, EventListeners allow lightweight event processing
 using [Event Interceptors](#Interceptors).
 
-- [Syntax](#syntax)
-  - [ServiceAccountName](#serviceAccountName)
-  - [Triggers](#triggers)
-    - [Interceptors](#interceptors)
-- [Logging](#logging)
-- [Labels](#labels)
-- [Examples](#examples)
+- [EventListener](#eventlistener)
+  - [Syntax](#syntax)
+    - [ServiceAccountName](#serviceaccountname)
+    - [Triggers](#triggers)
+    - [ServiceType](#servicetype)
+    - [Replicas](#replicas)
+    - [PodTemplate](#podtemplate)
+    - [Resources](#resources)
+      - [kubernetesResource](#kubernetesresource)
+        - [Replicas](#replicas)
+      - [CustomResource](#customresource)
+        - [Contract](#contract)
+    - [Logging](#logging)
+    - [NamespaceSelector](#namespaceSelector)
+    - [LabelSelector](#labelSelector)
+  - [Labels](#labels)
+  - [Annotations](#annotations)
+  - [Interceptors](#interceptors)
+    - [Webhook Interceptors](#webhook-interceptors)
+      - [ Webhook Interceptor Services](#webhook-interceptor-services)
+    - [GitHub Interceptors](#github-interceptors)
+    - [GitLab Interceptors](#gitlab-interceptors)
+    - [Bitbucket Interceptors](#bitbucket-interceptors)
+    - [CEL Interceptors](#cel-interceptors)
+      - [Overlays](#overlays)
+    - [Chaining Interceptors](#chaining-interceptors)
+  - [EventListener Response](#eventlistener-response)
+  - [How does the EventListener work?](#how-does-the-eventlistener-work)
+  - [Examples](#examples)
+  - [Response Timeout](#response-timeout)
+  - [Multi-Tenant Concerns](#multi-tenant-concerns)
+    - [Multiple EventListeners (One EventListener Per Namespace)](#multiple-eventlisteners-one-eventlistener-per-namespace)
+    - [Multiple EventListeners (Multiple EventListeners per Namespace)](#multiple-eventlisteners-multiple-eventlisteners-per-namespace)
+    - [ServiceAccount per EventListenerTrigger](#serviceaccount-per-eventlistenertrigger)
+  - [EventListener Secure Connection](#eventlistener-secure-connection)
+    - [Prerequisites](#prerequisites)
+  - [EventListener Response Format](#eventlistener-response-format)
+
+## Syntax
+
+To define a configuration file for an `EventListener` resource, you can specify
+the following fields:
+
+- Required:
+  - [`apiVersion`][kubernetes-overview] - Specifies the API version, for example
+    `triggers.tekton.dev/v1alpha1`.
+  - [`kind`][kubernetes-overview] - Specifies the `EventListener` resource
+    object.
+  - [`metadata`][kubernetes-overview] - Specifies data to uniquely identify the
+    `EventListener` resource object, for example a `name`.
+  - [`spec`][kubernetes-overview] - Specifies the configuration information for
+    your EventListener resource object. In order for an EventListener to do
+    anything, the spec must include:
+    - [`triggers`](#triggers) - Specifies a list of Triggers to run
+    - [`serviceAccountName`](#serviceAccountName) - Specifies the ServiceAccount
+      that the EventListener uses to create resources
+- Optional:
+  - [`serviceType`](#serviceType) - Specifies what type of service the sink pod
+    is exposed as
+  - [`replicas`](#replicas) - Specifies the number of EventListener pods
+  - [`podTemplate`](#podTemplate) - Specifies the PodTemplate
+    for your EventListener pod
+  - [`resources`](#resources) - Specifies the Kubernetes/Custom Resource shape for the EventListener sink
+    for your EventListener pod
+  - [`namespaceSelector`](#namespaceSelector) - Specifies the namespaces where
+    EventListener can fetch triggers from and create Tekton resources.
+
+[kubernetes-overview]:
+  https://kubernetes.io/docs/concepts/overview/working-with-objects/kubernetes-objects/#required-fields
+
+### ServiceAccountName
+
+The `serviceAccountName` field is required. The ServiceAccount that the
+EventListener sink uses to create the Tekton resources. 
+The ServiceAccount needs a Role that with "get", "list", and "watch" verbs for each Triggers resource as well as  a ClusterRole with read access to ClusterTriggerBindings. In addition, it needs to have "create"
+permissions on the Pipeline resources it needs to create. See a working example at [../examples/rbac.yaml](../examples/rbac.yaml).
+
+If your EventListener is using `namespaceSelectors`, the ServiceAccount will require a Cluster role to have read permissions for all Triggers resources across the cluster.
+
+### Triggers
+
+The `triggers` field is required. Each EventListener can consist of one or more
+`triggers`. A Trigger consists of:
+
+- `name` - (Optional) a valid
+  [Kubernetes name](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set)
+- [`interceptors`](#interceptors) - (Optional) list of interceptors to use
+- `bindings` - (Optional) A list of bindings to use. Can either be a reference to existing `TriggerBinding` resources or embedded name/value pairs.
+- `template` - (Optional) Either a reference to a TriggerTemplate object or an embedded TriggerTemplate spec.
+- `triggerRef` - (Optional) Reference to the [`Trigger`](./triggers.md).
+
+A `trigger` field must either have a `template` (along with needed `bindings` and `interceptors`) or a reference to another Trigger using `triggerRef`.
+
+```yaml
+triggers:
+  - name: trigger-1
+    interceptors:
+      - github:
+          eventTypes: ["pull_request"]
+    bindings:
+      - ref: pipeline-binding # Reference to a TriggerBinding object
+      - name: message # Embedded Binding
+        value: Hello from the Triggers EventListener!
+    template:
+      ref: pipeline-template
+```
+
+Or with only `triggerRef`:
+```yaml
+triggers:
+    - triggerRef: trigger
+```
+
+Or with an embedded `triggerTemplate` spec:
+```yaml
+triggers:
+  - name: "my-trigger"
+    template:
+      spec: 
+        params:
+          - name: "my-param-name"
+        resourceTemplates:
+        - apiVersion: "tekton.dev/v1beta1"
+          kind: TaskRun
+          metadata:
+            generateName: "pr-run-"
+          spec:
+            taskSpec:
+              steps:
+              - image: ubuntu
+                script: echo "hello there"
+```
+
+Also, to support multi-tenant styled scenarios, where an administrator may not want all triggers to have
+the same permissions as the `EventListener`, a service account can optionally be set at the trigger level
+and used if present in place of the `EventListener` service account when creating resources:
+
+```yaml
+triggers:
+  - name: trigger-1
+    serviceAccountName: trigger-1-sa
+    interceptors:
+      - github:
+          eventTypes: ["pull_request"]
+    bindings:
+      - ref: pipeline-binding
+      - ref: message-binding
+    template:
+      ref: pipeline-template
+``` 
+
+An update to the `Role` assigned to the EventListener's SeviceAccount is needed to allow it to impersonate
+the ServiceAccount specified for the trigger.
+
+```yaml
+rules:
+- apiGroups: [""]
+  resources: ["serviceaccounts"]
+  verbs: ["impersonate"]
+```
+
+### ServiceType
+
+The `serviceType` field is deprecated. Consider using `Resources` field.
+
+The `serviceType` field is optional. EventListener sinks are exposed via
+[Kubernetes Services](https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types).
+By default, the serviceType is `ClusterIP` which means any pods running in the
+same Kubernetes cluster can access services' via their cluster DNS. Other valid
+values are `NodePort` and `LoadBalancer`. Check the
+[Kubernetes Service types](https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types)
+documentations for details.
+
+For external services to connect to your cluster (e.g. GitHub sending webhooks),
+check out the guide on [exposing EventListeners](./exposing-eventlisteners.md).
+
+### Replicas
+
+The `spec.replicas` field has been moved to `spec.resources.kubernetesResource.replicas`.
+
+### PodTemplate
+
+The `podTemplate` field is deprecated. Consider using `Resources` field.
+
+The `podTemplate` field is optional. A PodTemplate is specifications for 
+creating EventListener pod. A PodTemplate consists of:
+- `tolerations` - list of toleration which allows pods to schedule onto the nodes with matching taints.
+This is needed only if you want to schedule EventListener pod to a tainted node.
+- `nodeSelector` - key-value labels the node has which an EventListener pod should be scheduled on. 
+
+```yaml
+spec:
+  podTemplate:
+    nodeSelector:
+      app: test
+    tolerations:
+    - key: key
+      value: value
+      operator: Equal
+      effect: NoSchedule
+```
+
+### Resources
+
+The `resources` field is optional.
+Resource field helps to provide Kubernetes or custom resource information.
+
+For more info on the design refer [TEP-0008](https://github.com/tektoncd/community/blob/master/teps/0008-support-knative-service-for-triggers-eventlistener-pod.md)
+
+Right now the `resources` field is optional in order to support backward compatibility with original behavior of `podTemplate`, `serviceType` and `serviceAccountName` fieds.
+In the future, we plan to remove `serviceType` and `podTemplate` from the EventListener spec in favor of the `resources` field.
+
+`resources` has support for
+* **kubernetesResource**
+* **CustomResource** for Custom CRD`(ex: Knative Service)`
+
+#### kubernetesResource
+`kubernetesResource` have two fields
+* ServiceType
+* Spec(PodTemplateSpec)
+
+
+```yaml
+spec:
+  resources:
+    kubernetesResource:
+      serviceType: NodePort
+      spec:
+        template:
+          metadata:
+            labels:
+              key: "value"
+            annotations:
+              key: "value"
+          spec:
+            serviceAccountName: tekton-triggers-github-sa
+            nodeSelector:
+              app: test
+            tolerations:
+            - key: key
+              value: value
+              operator: Equal
+              effect: NoSchedule
+```
+
+With the help of `kubernetesResource` user can specify [PodTemplateSpec](https://github.com/kubernetes/api/blob/master/core/v1/types.go#L3704).
+
+##### Replicas
+
+The `replicas` field is optional. By default, the number of replicas for the EventListener is 1.
+If you want to deploy more than one pod, you can specify the amount with the `replicas` field.
+
+**Note:** If the user sets the `replicas` field while creating/updating the eventlistener yaml then it won't respect the replicas value edited by the user manually on deployment or through any other mechanism (ex: HPA).
+
+#### CustomResource
+A `CustomResource` object has one field that supports dynamic objects.
+* runtime.RawExtension
+
+Here we will use a [Knative Service](https://knative.dev/docs/) as an example to demonstrate usage of `CustomResource`
+
+**Note:** `Knative Should be installed on the cluster` [ref](https://github.com/tektoncd/community/blob/main/teps/0008-support-knative-service-for-triggers-eventlistener-pod.md#note)
+```yaml
+spec:
+  resources:
+    customResource:
+      apiVersion: serving.knative.dev/v1
+      kind: Service
+#      metadata:
+#        name: knativeservice # name field is optional if not provided Triggers will use el name with the el- prefix ex: el-github-knative-listener
+      spec:
+        template:
+          spec:
+            serviceAccountName: tekton-triggers-example-sa
+            containers:
+            - resources:
+                requests:
+                  memory: "64Mi"
+                  cpu: "250m"
+                limits:
+                  memory: "128Mi"
+                  cpu: "500m"
+```
+
+With the help of `CustomResource` user can specify any dynamic object which adheres to the Contract described below.
+
+##### Contract
+For Knative or any new CRD should satisfy [WithPod{}](https://github.com/knative/pkg/blob/master/apis/duck/v1/podspec_types.go#L41)
+
+**Spec**
+```spec
+   spec:
+     template:
+       metadata:
+       spec:
+```
+**Status**
+```status
+type EventListenerStatus struct {
+  duckv1beta1.Status `json:",inline"`
+
+  // EventListener is Addressable. It currently exposes the service DNS
+  // address of the the EventListener sink
+  duckv1alpha1.AddressStatus `json:",inline"`
+}
+```
+
+##### Note
+For both `CustomResource` and `kubernetesResource` the allowed values for `PodSpec` and `Containers` are
+```text
+ServiceAccountName
+NodeSelector
+Tolerations
+Volumes
+Containers
+- Resources
+- VolumeMounts
+- Env
+```
+
+### Logging
+
+EventListener sinks are exposed as Kubernetes services that are backed by a Pod
+running the sink logic. The logging configuration can be controlled via the
+`config-logging-triggers` ConfigMap present in the namespace that the
+EventListener was created in. This ConfigMap is automatically created and
+contains the default values defined in
+[config-logging.yaml](../config/config-logging.yaml).
+
+To access logs for the EventListener sink, you can query for pods with the
+`eventlistener` label set to the name of your EventListener resource:
+
+```shell
+kubectl get pods --selector eventlistener=my-eventlistener
+```
+
+### NamespaceSelector
+The `namespaceSelector` field is optional.
+This field determines the namespaces where EventListener can search for triggers and
+create Tekton resources. If this field isn't provided, EventListener will only serve Triggers listed in its inline configuration or selected with LabelSelectors below.
+
+Snippet below will function in foo and bar namespaces.
+```yaml
+  namespaceSelector:
+    matchNames:
+    - foo
+    - bar
+```
+
+If EventListener is required to listen to serve the whole cluster, then below snippet
+can be used where we only provide single argument for `matchNames` as `*`.
+```yaml
+  namespaceSelector:
+    matchNames:
+    - *
+```
+
+### LabelSelector
+This field determines the labels for which EventListener will select triggers and
+create Tekton resources.
+
+In the snippet below, the EventListener will only select triggers from its  namespace with 
+label `foo=bar`.
+```yaml
+  labelSelector:
+    matchLabels:
+      foo: bar
+```
+
+The standard Kubernetes `labelSelector` mechanism is utilitized, so `matchExpressions`
+can also be used. In this configuration, it will use the `matchExpression`
+query to match Triggers across all namespaces.
+```yaml
+  namespaceSelector:
+    matchNames:
+    - *
+  labelSelector:
+    matchExpressions:
+      - {key: environment, operator: In, values: [dev,stage]}
+      - {key: trigger-phase, operator: NotIn, values: [testing]}
+```
+
+
+## Labels
+
+By default, EventListeners will attach the following labels automatically to all
+resources it creates:
+
+| Name                     | Description                                            |
+| ------------------------ | ------------------------------------------------------ |
+| triggers.tekton.dev/eventlistener | Name of the EventListener that generated the resource. |
+| triggers.tekton.dev/trigger       | Name of the Trigger that generated the resource.       |
+| triggers.tekton.dev/eventid       | UID of the incoming event.                             |
+
+Since the EventListener name and Trigger name are used as label values, they
+must adhere to the
+[Kubernetes syntax and character set requirements](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set)
+for label values.
+
+## Annotations
+
+All the annotations provided in Eventlistener will be further propagated to the service
+and deployment created by that Eventlistener.
+
+Example: You may need to add some annotation to the service like you need to annotation
+for TLS support to a LoadBalancer service on AWS, you can specify that annotation in 
+Eventlistener and it will be available to the service created by EventListener.
+
+```
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: EventListener
+metadata:
+  name: eventlistener
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: https
+```
+
+**Note**: If there are any annotations attached to the service or the deployment, they will get overwritten 
+by the annotations available in the eventlistener.
+
+## Interceptors
+
+Triggers within an `EventListener` can optionally specify interceptors, to
+modify the behavior or payload of Triggers. With 
+[TEP-0026](https://github.com/tektoncd/community/blob/main/teps/0026-interceptor-plugins.md), users have a unified way 
+to configure all interceptors though we continue to support the old core and webhook interceptors as well.
+
+An interceptor consists of:
+- `name` - (Optional) a name to identify this interceptor configuration
+- `ref` - A reference to a ClusterInterceptor. At least, the `name` field must be specified while the `kind` and 
+  `apiVersion` fields are optional
+- `params` - (Optional) A list of `name` and `value` pairs. The `name` field is a string while the `value` can be any 
+   valid JSON object
+   
+As an example, see the snippet below:
+```yaml
+interceptors:
+    - name: "validate GitHub payload and filter on eventType"
+      ref:
+        name: "github"
+      params:
+      - name: "secretRef"
+        value:
+          secretName: github-secret
+          secretKey: secretToken
+      - name: "eventTypes"
+        value: ["pull_request"]
+    - name: "CEL filter: only when PRs are opened"
+      ref:
+        name: "cel"
+      params:
+      - name: "filter"
+        value: "body.action in ['opened', 'reopened']"
+```
+
+**NOTE:** Previously, the core interceptors described in the following sections could also be configured 
+with a different syntax where the name of the interceptor is a field within `interceptors`. This syntax is DEPRECATED 
+and while it continues to work, it may be removed in a future release. Each core interceptor below has examples of 
+using both the new syntax and the old syntax.
+
+Interceptors can take several different forms:
+- [Webhook Interceptors](#Webhook-Interceptors)
+- [GitHub Interceptors](#GitHub-Interceptors)
+- [GitLab Interceptors](#GitLab-Interceptors)
+- [Bitbucket Interceptors](#Bitbucket-Interceptors)
+- [CEL Interceptors](#CEL-Interceptors)
+
+### Webhook Interceptors
+
+Webhook Interceptors allow users to configure an external k8s object which
+contains business logic. These are currently specified under the `Webhook`
+field, which contains an
+[`ObjectReference`](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.12/#objectreference-v1-core)
+to a Kubernetes Service. If a Webhook Interceptor is specified, the
+`EventListener` sink will forward incoming events to the service referenced by
+the Interceptor over HTTP. The service is expected to process the event and
+return a response back. The status code of the response determines if the
+processing is successful - a 200 response means the Interceptor was successful
+and that processing should continue, any other status code will halt Trigger
+processing. The returned request (body and headers) is used as the new event
+payload by the EventListener and passed on the `TriggerBinding`. An Interceptor
+has an optional header field with key-value pairs that will be merged with event
+headers before being sent;
+[canonical](https://golang.org/pkg/net/textproto/#CanonicalMIMEHeaderKey) names
+must be specified.
+
+The incoming request URL (received by the EventListener) is provided in the
+`Eventlistener-Request-URL` header provided to the Webhook interceptor.
+
+When multiple Interceptors are specified, requests are piped through each
+Interceptor sequentially for processing - e.g. the headers/body of the first
+Interceptor's response will be sent as the request to the second Interceptor. It
+is the responsibility of Interceptors to preserve header/body data if desired.
+The response body and headers of the last Interceptor is used for resource
+binding/templating.
+
+#### Webhook Interceptor Services
+
+To be a valid Webhook Interceptor, a Kubernetes object should:
+
+- Be fronted by a regular Kubernetes v1 Service over port 80
+- Accept JSON payloads over HTTP
+- Accept HTTP POST requests with JSON payloads.
+- Return a HTTP 200 OK Status if the EventListener should continue processing
+  the event
+- Return a JSON body back. This will be used by the EventListener as the event
+  payload for any further processing. If the Interceptor does not need to modify
+  the body, it can simply return the body that it received.
+- Return any Headers that might be required by other chained Interceptors or any
+  bindings.
+
+**Note**: It is the responsibility of Interceptors to preserve header/body data
+if desired. The response body and headers of the last Interceptor is used for
+resource binding/templating.
+
+<!-- FILE: examples/eventlisteners/eventlistener-interceptor.yaml -->
+```YAML
+---
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: EventListener
+metadata:
+  name: listener-interceptor
+spec:
+  serviceAccountName: tekton-triggers-example-sa
+  triggers:
+    - name: foo-trig
+      interceptors:
+        - webhook:
+            header:
+              - name: Foo-Trig-Header1
+                value: string-value
+              - name: Foo-Trig-Header2
+                value:
+                  - array-val1
+                  - array-val2
+            objectRef:
+              kind: Service
+              name: gh-validate
+              apiVersion: v1
+              namespace: default
+      bindings:
+        - ref: pipeline-binding
+      template:
+        ref: pipeline-template
+```
+
+### GitHub Interceptors
+
+GitHub Interceptors contain logic to validate and filter webhooks that come from
+GitHub. Supported features include validating webhooks actually came from GitHub
+using the logic outlined in GitHub
+[documentation](https://developer.github.com/webhooks/securing/), as well as
+filtering incoming events.
+
+To use this Interceptor as a validator, create a secret string using the method
+of your choice, and configure the GitHub webhook to use that secret value.
+Create a Kubernetes secret containing this value, and pass that as a reference
+to the `github` Interceptor.
+
+To use this Interceptor as a filter, add the event types you would like to
+accept to the `eventTypes` field. Valid values can be found in GitHub
+[docs](https://developer.github.com/webhooks/#events).
+
+The body/header of the incoming request will be preserved in this Interceptor's
+response.
+
+```yaml
+ # New syntax
+  triggers:
+    - name: github-listener
+      interceptors:
+        - ref:
+            name: "github"
+            kind: ClusterInterceptor
+            apiVersion: triggers.tekton.dev
+          params:
+          - name: "secretRef"
+            value:
+              secretName: github-secret
+              secretKey: secretToken
+          - name: "eventTypes"
+            value: ["pull_request"]
+```
+**DEPRECATED syntax**:
+```yaml
+  triggers:
+    - name: github-listener
+      interceptors:
+        - github:
+            secretRef:
+              secretName: github-secret
+              secretKey: secretToken
+            eventTypes: ["pull_request"]
+```
+
+Check out a full example of using GitHub Interceptor in [examples/github](../examples/github)
+
+### GitLab Interceptors
+
+GitLab Interceptors contain logic to validate and filter requests that come from
+GitLab. Supported features include validating that a webhook actually came from
+GitLab, using the logic outlined in GitLab
+[documentation](https://docs.gitlab.com/ee/user/project/integrations/webhooks.html),
+and to filter incoming events based on the event types. Event types can be found
+in GitLab
+[documentation](https://docs.gitlab.com/ee/user/project/integrations/webhooks.html#events).
+
+To use this Interceptor as a validator, create a secret string using the method
+of your choice, and configure the GitLab webhook to use that secret value.
+Create a Kubernetes secret containing this value, and pass that as a reference
+to the `gitlab` Interceptor.
+
+To use this Interceptor as a filter, add the event types you would like to
+accept to the `eventTypes` field.
+
+The body/header of the incoming request will be preserved in this Interceptor's
+response.
+
+```yaml
+interceptors:
+- ref:
+    name: "gitlab"
+  params:
+  - name: "secretRef"
+    value:
+      secretName: foo
+      secretKey: bar
+  - name: "eventTypes"
+    value: ["Push Hook"]
+```
+
+**DEPRECATED syntax:** 
+```yaml
+interceptors:
+- gitlab:
+    secretRef:
+      secretName: foo
+      secretKey: bar
+    eventTypes:
+      - Push Hook
+```
+
+### Bitbucket Interceptors
+
+The Bitbucket interceptor provides support for hooks originating in [Bitbucket server](https://confluence.atlassian.com/bitbucketserver), providing server hook signature validation and event-filtering.
+[Bitbucket cloud](https://support.atlassian.com/bitbucket-cloud/) is not currently supported by this interceptor, as it has no secret validation, so you could match on the incoming requests using the CEL interceptor.
+
+To use this Interceptor as a validator, create a secret string using the method
+of your choice, and configure the Bitbucket webhook to use that secret value.
+Create a Kubernetes secret containing this value, and pass that as a reference
+to the `bitbucket` Interceptor.
+
+To use this Interceptor as a filter, add the event types you would like to
+accept to the `eventTypes` field. Valid values can be found in Bitbucket
+[docs](https://confluence.atlassian.com/bitbucketserver/event-payload-938025882.html).
+
+The body/header of the incoming request will be preserved in this Interceptor's
+response.
+
+```yaml
+interceptors:
+- ref:
+    name: "bitbucket"
+  params:
+    - name: secretRef
+      value:
+        secretName: bitbucket-secret
+        secretKey: secretToken
+    - name: eventTypes
+      value:
+        - repo:refs_changed
+```
+**DEPRECATED syntax:**
+```yaml
+interceptors:
+- bitbucket:
+    secretRef:
+      secretName: bitbucket-secret
+      secretKey: secretToken     
+    eventTypes: ["repo:refs_changed"]
+```
+
+### CEL Interceptors
+
+CEL Interceptors can be used to filter or add extra information to incoming events, using the
+[CEL](https://github.com/google/cel-go) expression language.
+
+Please read the
+[cel-spec language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md)
+for more details on the expression language syntax.
+
+The `cel-trig-with-matches` trigger below filters events that don't have an
+`'X-GitHub-Event'` header matching `'pull_request'`.
+
+It also modifies the incoming event, adding an extra key to the JSON body,
+with a truncated string coming from the hook body.
+```yaml
+  triggers:
+    - name: cel-trig-with-matches
+      interceptors:
+        - ref:
+            name: "cel"
+          params:
+          - name: "filter"
+            value: "header.match('X-GitHub-Event', 'pull_request')"
+          - name: "overlays"
+            value:
+              - key: truncated_sha
+                expression: "body.pull_request.head.sha.truncate(7)"
+      bindings:
+      - name: sha
+        value: $(extensions.truncated_sha)
+```
+
+**DEPRECATED syntax:**
+```yaml
+  triggers:
+    - name: cel-trig-with-matches
+      interceptors:
+        - cel:
+            filter: "header.match('X-GitHub-Event', 'pull_request')"
+            overlays:
+            - key: truncated_sha
+              expression: "body.pull_request.head.sha.truncate(7)"
+      bindings:
+      - name: sha
+        value: $(extensions.truncated_sha)
+```
+
+In addition to the standard expressions provided by CEL, Triggers supports some
+useful functions for dealing with event data
+[CEL expressions](./cel_expressions.md).
+
+
+The `filter` expression must return a `true` value if this trigger is to be
+processed, and the `overlays` applied.
+
+Optionally, no `filter` expression can be provided, and the `overlays` will be
+applied to the incoming body.
+<!-- FILE: examples/eventlisteners/cel-eventlistener-no-filter.yaml -->
+```YAML
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: EventListener
+metadata:
+  name: cel-eventlistener-no-filter
+spec:
+  serviceAccountName: tekton-triggers-example-sa
+  triggers:
+    - name: cel-trig
+      interceptors:
+        - ref:
+            name: "cel"
+          params:
+            - name: "overlays"
+              value:
+                - key: extensions.truncated_sha
+                  expression: "body.pull_request.head.sha.truncate(7)"
+      bindings:
+      - ref: pipeline-binding
+      template:
+        ref: pipeline-template
+```
+#### Overlays
+
+The CEL interceptor supports "overlays", these are CEL expressions whose values are added to the incoming event under a 
+top-level `extensions` field  and are accessible by TriggerBindings.
+```yaml
+  triggers:
+    - name: cel-trig
+      interceptors:
+        - ref:
+            name: cel
+          params:
+          - name: "overlays"
+            value:
+            - key: truncated_sha
+              expression: "body.pull_request.head.sha.truncate(7)"
+            - key: branch_name
+              expression: "body.ref.split('/')[2]"
+```
+
+**DEPRECATED syntax**:
+```yaml
+  triggers:
+    - name: cel-trig
+      interceptors:
+        - cel:
+            overlays:
+            - key: truncated_sha
+              expression: "body.pull_request.head.sha.truncate(7)"
+            - key: branch_name
+              expression: "body.ref.split('/')[2]"
+```
+
+
+In this example, the bindings will see two added" fields -- `extensions.truncated_sha` and `extensions.branch_name` in 
+addition to the regular `body` and `header` fields.
+
+The `key` element of the overlay can create new elements or replace existing elements within the extensions field.
+Note that the original incoming body is not modified. Instead, new fields are added to a separate top-level `extensions`
+field that is accessible by TriggerBindings. 
+
+For example, this expression:
+
+```YAML
+- key: short_sha
+  expression: "truncate(body.pull_request.head.sha, 7)"
+```
+
+Would see the `short_sha` being created in the `extensions` field:
+
+```json
+{
+  "body": {
+    "ref": "refs/heads/master",
+    "pull_request": {
+      "head": {
+        "sha": "6113728f27ae82c7b1a177c8d03f9e96e0adf246"
+      }
+    }
+  },
+  "extensions": {
+    "short_sha": "6113728"
+  }
+}
+```
+
+It's even possible to replace existing fields, by providing a key that matches
+the path to an existing value.
+
+Anything that is applied as an overlay can be extracted using a binding e.g.
+
+<!-- FILE: examples/triggerbindings/cel-example-trigger-binding.yaml -->
+```YAML
+apiVersion: triggers.tekton.dev/v1alpha1
+kind: TriggerBinding
+metadata:
+  name: pipeline-binding-with-cel-extensions
+spec:
+  params:
+  - name: gitrevision
+    value: $(extensions.branch_name)
+  - name: branch
+    value: $(extensions.short_sha)
+```
+
+### Chaining Interceptors
+
+This section documents the current behavior for passing data between interceptors. This will change as we fully implement #271.
+
+**CEL Interceptor:** Overlays from the CEL interceptor do not modify the event body. Instead they add fields to the top level `extensions` field.
+
+**Webhook Interceptors:** Webhook Interceptors *can* modify the event body currently. However, this will change in a future release when they will have to write to the extensions field like the CEL interceptor. Since the webhook interceptor does not have access to the top level `extensions` field, the EventListener will add the `extensions` field to the body before sending it to the webhook interceptor. As an example, consider the following interceptor chain:
+  
+  ```yaml
+    interceptors:
+      - cel:
+          overlays:
+            - key: "truncated_sha"
+              expression: "body.sha.truncate(5)"
+      - webhook:
+        objectRef:
+          kind: Service
+          name: some-interceptor
+          apiVersion: v1
+      - cel:
+          filter: "body.extensions.truncated_sha == \"abcde\"" # Can also be extensions.truncated_sha == \"abcde\"
+  ```
+
+In the above snipped, the first CEL interceptor adds the `truncated_sha` field. To ensure the following webhook interceptor can use this field, the EventListener will add it to the body. So, the body received by the webhook interceptor will look as follows:
+
+```
+{
+  "sha": "abcdefghi", // Original field
+  "extensions": {
+     "truncated_sha": "abcde" 
+  }
+}
+```
+Assuming the webhook interceptor does not then modify the body, the last CEL interceptor (as well as any bindings) will have access to truncated_sha both via the body as well as via extensions i.e both `$(body.extensions.truncated_sha)` as well as `$(extensions.truncated_sha)`
+
+## EventListener Response
+
+The EventListener responds with 201 Created status code when at least one of the trigger is executed successfully. Otherwise, it returns 202 Accepted status code.
+The EventListener responds with following message after receiving the event:
+```JSON
+{"eventListener":"listener","namespace":"default","eventID":"h2bb7"}
+```
+- `eventListener` - Refers to the EventListener Name.
+- `namespace` - Refers to the namespace of the EventListener
+- `eventID` - Refers to the uniqueID that gets assigned to each incoming request
+
+## How does the EventListener work?
+
+Lets understand how an EventListener works with an example using GitHub
+
+* Create a sample GitHub example
+```bash
+kubectl create -f https://github.com/tektoncd/triggers/tree/master/examples/github
+```
+
+* Once the EventListener is created,  the Triggers controller will create a new `Deployment` and `Service` for the EventListener. We can use `kubectl` to see them running:
+```bash
+kubectl get deployment
+NAME                             READY   UP-TO-DATE   AVAILABLE   AGE
+el-github-listener-interceptor   1/1     1            1           11s
+
+kubectl get svc
+NAME                             TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+el-github-listener-interceptor   ClusterIP   10.99.188.140   <none>        8080/TCP   52s
+```
+The Triggers controller uses fields from the EventListener's `spec` (which is described in the [Syntax](https://github.com/tektoncd/triggers/blob/master/docs/eventlisteners.md#syntax) section, as well as [`metadata.labels`](https://github.com/tektoncd/triggers/blob/master/docs/eventlisteners.md#labels)
+in addition to some pre-configured information like (container `Image`, `Name`, `Port`) to create the **Deployment** and **Service**.
+
+We follow a naming convention while creating these resources. An EventListener named `foo` will create a deployment and a service both named `el-foo`.
+
+Once all the resources are up and running user can get a URL to send webhook events. This URL points to the service created above and points to the deployment.
+```bash
+kubectl get eventlistener
+NAME                          ADDRESS                                                              AVAILABLE   REASON
+github-listener-interceptor   http://el-github-listener-interceptor.ptest.svc.cluster.local:8080   True        MinimumReplicasAvailable
+```
+
+Follow [GitHub example](https://github.com/tektoncd/triggers/blob/master/examples/github/README.md) to try out locally.
+
+## Examples
+
+For complete examples, see
+[the examples folder](https://github.com/tektoncd/triggers/tree/master/examples).
+
+## Response Timeout
+Eventlistener sink timeout if EventListener isn't able to process the request within certain duration. The response timeout configuration is defined in [controller.yaml](../config/controller.yaml).
+- `-el-readtimeout`: This define ReadTimeOut for sink server. Default value is 5 s.
+- `-el-writetimeout`: This define WriteTimeout for sink server. Default value is 40s.
+- `-el-idletimeout`: This define the IdleTimeout for sink server. Default value is 120s.
+- `-el-timeouthandler`: This define the Timeout for Handler for sink server's route. Default value is 30s.
+
 
 ## Multi-Tenant Concerns
 
@@ -83,565 +1012,36 @@ You still have to create the additional ServiceAccounts.
 But staying within 1 namespace and minimizing the number of EventListeners with their associated "Sinks" minimizes 
 concerns around `etcd` storage and port considerations with Firewalls if `Ingress` is not utilized.
 
-## Syntax
-
-To define a configuration file for an `EventListener` resource, you can specify
-the following fields:
-
-- Required:
-  - [`apiVersion`][kubernetes-overview] - Specifies the API version, for example
-    `triggers.tekton.dev/v1alpha1`.
-  - [`kind`][kubernetes-overview] - Specifies the `EventListener` resource
-    object.
-  - [`metadata`][kubernetes-overview] - Specifies data to uniquely identify the
-    `EventListener` resource object, for example a `name`.
-  - [`spec`][kubernetes-overview] - Specifies the configuration information for
-    your EventListener resource object. In order for an EventListener to do
-    anything, the spec must include:
-    - [`triggers`](#triggers) - Specifies a list of Triggers to run
-    - [`serviceAccountName`](#serviceAccountName) - Specifies the ServiceAccount
-      that the EventListener uses to create resources
-- Optional:
-  - [`serviceType`](#serviceType) - Specifies what type of service the sink pod
-    is exposed as
-
-[kubernetes-overview]:
-  https://kubernetes.io/docs/concepts/overview/working-with-objects/kubernetes-objects/#required-fields
-
-### ServiceAccountName
-
-The `serviceAccountName` field is required. The ServiceAccount that the
-EventListener sink uses to create the Tekton resources. The ServiceAccount needs
-a role with the following rules:
-
-<!-- FILE: examples/role-resources/triggerbinding-roles/role.yaml -->
-```YAML
-kind: Role
-apiVersion: rbac.authorization.k8s.io/v1
-metadata:
-  name: tekton-triggers-example-minimal
-rules:
-# Permissions for every EventListener deployment to function
-- apiGroups: ["triggers.tekton.dev"]
-  resources: ["eventlisteners", "triggerbindings", "triggertemplates"]
-  verbs: ["get"]
-- apiGroups: [""]
-  # secrets are only needed for Github/Gitlab interceptors, serviceaccounts only for per trigger authorization
-  resources: ["configmaps", "secrets", "serviceaccounts"]
-  verbs: ["get", "list", "watch"]
-# Permissions to create resources in associated TriggerTemplates
-- apiGroups: ["tekton.dev"]
-  resources: ["pipelineruns", "pipelineresources", "taskruns"]
-  verbs: ["create"]
-```
-
-
-If your EventListener is using
-[`ClusterTriggerBindings`](./clustertriggerbindings.md), you'll need a
-ServiceAccount with a
-[ClusterRole instead](../examples/role-resources/clustertriggerbinding-roles/clusterrole.yaml).
-
-### Triggers
-
-The `triggers` field is required. Each EventListener can consist of one or more
-`triggers`. A Trigger consists of:
-
-- `name` - (Optional) a valid
-  [Kubernetes name](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set)
-- [`interceptors`](#interceptors) - (Optional) list of interceptors to use
-- `bindings` - A list of `TriggerBindings` reference to use or embedded TriggerBindingsSpecs to use.
-- `template` - The name of `TriggerTemplate` to use
-
-```yaml
-triggers:
-  - name: trigger-1
-    interceptors:
-      - github:
-          eventTypes: ["pull_request"]
-    bindings:
-      - name: pipeline-binding
-        ref:  pipeline-binding
-      - name: message-binding
-        spec:
-            params:
-              - name: message
-                value: Hello from the Triggers EventListener!
-    template:
-      name: pipeline-template
-```
-
-Also, to support multi-tenant styled scenarios, where an administrator may not want all triggers to have
-the same permissions as the `EventListener`, a service account can optionally be set at the trigger level
-and used if present in place of the `EventListener` service account when creating resources:
-
-```yaml
-triggers:
-  - name: trigger-1
-    serviceAccount: 
-      name: trigger-1-sa
-      namespace: event-listener-namespace
-    interceptors:
-      - github:
-          eventTypes: ["pull_request"]
-    bindings:
-      - name: pipeline-binding
-        ref:  pipeline-binding
-      - name: message-binding
-        ref:  message-binding
-    template:
-      name: pipeline-template
-``` 
-
-The default ClusterRole for the EventListener allows for reading ServiceAccounts from any namespace.
-
-### ServiceType
-
-The `serviceType` field is optional. EventListener sinks are exposed via
-[Kubernetes Services](https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types).
-By default, the serviceType is `ClusterIP` which means any pods running in the
-same Kubernetes cluster can access services' via their cluster DNS. Other valid
-values are `NodePort` and `LoadBalancer`. Check the
-[Kubernetes Service types](https://kubernetes.io/docs/concepts/services-networking/service/#publishing-services-service-types)
-documentations for details.
-
-For external services to connect to your cluster (e.g. GitHub sending webhooks),
-check out the guide on [exposing EventListeners](./exposing-eventlisteners.md).
-
-### Logging
-
-EventListener sinks are exposed as Kubernetes services that are backed by a Pod
-running the sink logic. The logging configuration can be controlled via the
-`config-logging-triggers` ConfigMap present in the namespace that the
-EventListener was created in. This ConfigMap is automatically created and
-contains the default values defined in
-[config-logging.yaml](../config/config-logging.yaml).
-
-To access logs for the EventListener sink, you can query for pods with the
-`eventlistener` label set to the name of your EventListener resource:
-
-```shell
-kubectl get pods --selector eventlistener=my-eventlistener
-```
-
-## Labels
-
-By default, EventListeners will attach the following labels automatically to all
-resources it creates:
-
-| Name                     | Description                                            |
-| ------------------------ | ------------------------------------------------------ |
-| triggers.tekton.dev/eventlistener | Name of the EventListener that generated the resource. |
-| triggers.tekton.dev/trigger       | Name of the Trigger that generated the resource.       |
-| triggers.tekton.dev/eventid       | UID of the incoming event.                             |
-
-Since the EventListener name and Trigger name are used as label values, they
-must adhere to the
-[Kubernetes syntax and character set requirements](https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set)
-for label values.
-
-## Interceptors
-
-Triggers within an `EventListener` can optionally specify interceptors, to
-modify the behavior or payload of Triggers.
-
-Event Interceptors can take several different forms today:
-
-- [Webhook Interceptors](#Webhook-Interceptors)
-- [GitHub Interceptors](#GitHub-Interceptors)
-- [GitLab Interceptors](#GitLab-Interceptors)
-- [CEL Interceptors](#CEL-Interceptors)
-
-### Webhook Interceptors
-
-Webhook Interceptors allow users to configure an external k8s object which
-contains business logic. These are currently specified under the `Webhook`
-field, which contains an
-[`ObjectReference`](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.12/#objectreference-v1-core)
-to a Kubernetes Service. If a Webhook Interceptor is specified, the
-`EventListener` sink will forward incoming events to the service referenced by
-the Interceptor over HTTP. The service is expected to process the event and
-return a response back. The status code of the response determines if the
-processing is successful - a 200 response means the Interceptor was successful
-and that processing should continue, any other status code will halt Trigger
-processing. The returned request (body and headers) is used as the new event
-payload by the EventListener and passed on the `TriggerBinding`. An Interceptor
-has an optional header field with key-value pairs that will be merged with event
-headers before being sent;
-[canonical](https://golang.org/pkg/net/textproto/#CanonicalMIMEHeaderKey) names
-must be specified.
-
-When multiple Interceptors are specified, requests are piped through each
-Interceptor sequentially for processing - e.g. the headers/body of the first
-Interceptor's response will be sent as the request to the second Interceptor. It
-is the responsibility of Interceptors to preserve header/body data if desired.
-The response body and headers of the last Interceptor is used for resource
-binding/templating.
-
-#### Event Interceptor Services
-
-To be an Event Interceptor, a Kubernetes object should:
-
-- Be fronted by a regular Kubernetes v1 Service over port 80
-- Accept JSON payloads over HTTP
-- Accept HTTP POST requests with JSON payloads.
-- Return a HTTP 200 OK Status if the EventListener should continue processing
-  the event
-- Return a JSON body back. This will be used by the EventListener as the event
-  payload for any further processing. If the Interceptor does not need to modify
-  the body, it can simply return the body that it received.
-- Return any Headers that might be required by other chained Interceptors or any
-  bindings.
-
-**Note**: It is the responsibility of Interceptors to preserve header/body data
-if desired. The response body and headers of the last Interceptor is used for
-resource binding/templating.
-
-<!-- FILE: examples/eventlisteners/eventlistener-interceptor.yaml -->
-```YAML
----
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: EventListener
-metadata:
-  name: listener-interceptor
-spec:
-  serviceAccountName: tekton-triggers-example-sa
-  triggers:
-    - name: foo-trig
-      interceptors:
-        - webhook:
-            header:
-              - name: Foo-Trig-Header1
-                value: string-value
-              - name: Foo-Trig-Header2
-                value:
-                  - array-val1
-                  - array-val2
-            objectRef:
-              kind: Service
-              name: gh-validate
-              apiVersion: v1
-              namespace: default
-      bindings:
-        - ref: pipeline-binding
-      template:
-        name: pipeline-template
-```
-
-
-### GitHub Interceptors
-
-GitHub Interceptors contain logic to validate and filter webhooks that come from
-GitHub. Supported features include validating webhooks actually came from GitHub
-using the logic outlined in GitHub
-[documentation](https://developer.github.com/webhooks/securing/), as well as
-filtering incoming events.
-
-To use this Interceptor as a validator, create a secret string using the method
-of your choice, and configure the GitHub webhook to use that secret value.
-Create a Kubernetes secret containing this value, and pass that as a reference
-to the `github` Interceptor.
-
-To use this Interceptor as a filter, add the event types you would like to
-accept to the `eventTypes` field. Valid values can be found in GitHub
-[docs](https://developer.github.com/webhooks/#events).
-
-The body/header of the incoming request will be preserved in this Interceptor's
-response.
-
-<!-- FILE: examples/eventlisteners/github-eventlistener-interceptor.yaml -->
-```YAML
----
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: EventListener
-metadata:
-  name: github-listener-interceptor
-spec:
-  serviceAccountName: tekton-triggers-example-sa
-  triggers:
-    - name: foo-trig
-      interceptors:
-        - github:
-            secretRef:
-              secretName: foo
-              secretKey: bar
-            eventTypes:
-              - pull_request
-      bindings:
-        - ref: pipeline-binding
-      template:
-        name: pipeline-template
-```
-
-
-### GitLab Interceptors
-
-GitLab Interceptors contain logic to validate and filter requests that come from
-GitLab. Supported features include validating that a webhook actually came from
-GitLab, using the logic outlined in GitLab
-[documentation](https://docs.gitlab.com/ee/user/project/integrations/webhooks.html),
-and to filter incoming events based on the event types. Event types can be found
-in GitLab
-[documentation](https://docs.gitlab.com/ee/user/project/integrations/webhooks.html#events).
-
-To use this Interceptor as a validator, create a secret string using the method
-of your choice, and configure the GitLab webhook to use that secret value.
-Create a Kubernetes secret containing this value, and pass that as a reference
-to the `gitlab` Interceptor.
-
-To use this Interceptor as a filter, add the event types you would like to
-accept to the `eventTypes` field.
-
-The body/header of the incoming request will be preserved in this Interceptor's
-response.
-
-```yaml
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: EventListener
-metadata:
-  name: gitlab-listener-interceptor
-spec:
-  serviceAccountName: tekton-triggers-example-sa
-  triggers:
-    - name: foo-trig
-      interceptors:
-        - gitlab:
-            secretRef:
-              secretName: foo
-              secretKey: bar
-            eventTypes:
-              - Push Hook
-      bindings:
-        - name: pipeline-binding
-          ref:  pipeline-binding
-      template:
-        name: pipeline-template
-```
-
-### CEL Interceptors
-
-CEL Interceptors can be used to filter or modify incoming events, using the
-[CEL](https://github.com/google/cel-go) expression language.
-
-Please read the
-[cel-spec language definition](https://github.com/google/cel-spec/blob/master/doc/langdef.md)
-for more details on the expression language syntax.
-
-The `cel-trig-with-matches` trigger below filters events that don't have an
-`'X-GitHub-Event'` header matching `'pull_request'`.
-
-It also modifies the incoming request, adding an extra key to the JSON body,
-with a truncated string coming from the hook body.
-
-<!-- FILE: examples/eventlisteners/cel-eventlistener-interceptor.yaml -->
-```YAML
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: EventListener
-metadata:
-  name: cel-listener-interceptor
-spec:
-  serviceAccountName: tekton-triggers-example-sa
-  triggers:
-    - name: cel-trig-with-matches
-      interceptors:
-        - cel:
-            filter: "header.match('X-GitHub-Event', 'pull_request')"
-            overlays:
-            - key: extensions.truncated_sha
-              expression: "body.pull_request.head.sha.truncate(7)"
-      bindings:
-      - name: pipeline-binding
-      template:
-        name: pipeline-template
-    - name: cel-trig-with-canonical
-      interceptors:
-        - cel:
-            filter: "header.canonical('X-GitHub-Event') == 'push'"
-      bindings:
-      - ref: pipeline-binding
-      template:
-        name: pipeline-template
-```
-
-
-In addition to the standard expressions provided by CEL, Triggers supports some
-useful functions for dealing with event data
-[CEL expressions](./cel_expressions.md).
-
-The body/header of the incoming request will be preserved in this Interceptor's
-response.
-
-<!-- FILE: examples/eventlisteners/cel-eventlistener-interceptor.yaml -->
-```YAML
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: EventListener
-metadata:
-  name: cel-listener-interceptor
-spec:
-  serviceAccountName: tekton-triggers-example-sa
-  triggers:
-    - name: cel-trig-with-matches
-      interceptors:
-        - cel:
-            filter: "header.match('X-GitHub-Event', 'pull_request')"
-            overlays:
-            - key: extensions.truncated_sha
-              expression: "body.pull_request.head.sha.truncate(7)"
-      bindings:
-      - name: pipeline-binding
-      template:
-        name: pipeline-template
-    - name: cel-trig-with-canonical
-      interceptors:
-        - cel:
-            filter: "header.canonical('X-GitHub-Event') == 'push'"
-      bindings:
-      - ref: pipeline-binding
-      template:
-        name: pipeline-template
-```
-
-
-The `filter` expression must return a `true` value if this trigger is to be
-processed, and the `overlays` applied.
-
-Optionally, no `filter` expression can be provided, and the `overlays` will be
-applied to the incoming body.
-<!-- FILE: examples/eventlisteners/cel-eventlistener-no-filter.yaml -->
-```YAML
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: EventListener
-metadata:
-  name: cel-eventlistener-no-filter
-spec:
-  serviceAccountName: tekton-triggers-example-sa
-  triggers:
-    - name: cel-trig
-      interceptors:
-        - cel:
-            overlays:
-            - key: extensions.truncated_sha
-              expression: "body.pull_request.head.sha.truncate(7)"
-      bindings:
-      - ref: pipeline-binding
-      template:
-        name: pipeline-template
-```
-
-
-#### Overlays
-
-The CEL interceptor supports "overlays", these are CEL expressions that are
-applied to the body before it's returned to the event-listener.
-
-<!-- FILE: examples/eventlisteners/cel-eventlistener-multiple-overlays.yaml -->
-```YAML
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: EventListener
-metadata:
-  name: example-with-multiple-overlays
-spec:
-  serviceAccountName: tekton-triggers-example-sa
-  triggers:
-    - name: cel-trig
-      interceptors:
-        - cel:
-            overlays:
-            - key: extensions.truncated_sha
-              expression: "body.pull_request.head.sha.truncate(7)"
-            - key: extensions.branch_name
-              expression: "body.ref.split('/')[2]"
-      bindings:
-      - ref: pipeline-binding
-      template:
-        name: pipeline-template
-```
-
-
-In this example, the bindings will see two additional fields:
-
-Assuming that the input body looked something like this:
-
-```json
-{
-  "ref": "refs/heads/master",
-  "pull_request": {
-    "head": {
-      "sha": "6113728f27ae82c7b1a177c8d03f9e96e0adf246"
-    }
-  }
-}
-```
-
-The output body would look like this:
-
-```json
-{
-  "ref": "refs/heads/master",
-  "pull_request": {
-    "head": {
-      "sha": "6113728f27ae82c7b1a177c8d03f9e96e0adf246"
-    }
-  },
-  "extensions": {
-    "truncated_sha": "6113728",
-    "branch_name": "master"
-  }
-}
-```
-
-The `key` element of the overlay can create new elements in a body, or, overlay
-existing elements.
-
-For example, this expression:
-
-```YAML
-- key: body.pull_request.head.short_sha
-  expression: "truncate(body.pull_request.head.sha, 7)"
-```
-
-Would see the `short_sha` being inserted into the existing body:
-
-```json
-{
-  "ref": "refs/heads/master",
-  "pull_request": {
-    "head": {
-      "sha": "6113728f27ae82c7b1a177c8d03f9e96e0adf246",
-      "short_sha": "6113728"
-    }
-  }
-}
-```
-
-It's even possible to replace existing fields, by providing a key that matches
-the path to an existing value.
-
-Anything that is applied as an overlay can be extracted using a binding e.g.
-
-<!-- FILE: examples/triggerbindings/cel-example-trigger-binding.yaml -->
-```YAML
-apiVersion: triggers.tekton.dev/v1alpha1
-kind: TriggerBinding
-metadata:
-  name: pipeline-binding-with-cel-extensions
-spec:
-  params:
-  - name: gitrevision
-    value: $(body.extensions.branch_name)
-  - name: branch
-    value: $(body.pull_request.head.short_sha)
-```
-
-
-
-## Examples
-
-For complete examples, see
-[the examples folder](https://github.com/tektoncd/triggers/tree/master/examples).
-
 ---
 
 Except as otherwise noted, the content of this page is licensed under the
 [Creative Commons Attribution 4.0 License](https://creativecommons.org/licenses/by/4.0/),
 and code samples are licensed under the
 [Apache 2.0 License](https://www.apache.org/licenses/LICENSE-2.0).
+
+## EventListener Secure Connection
+
+Triggers now support both `HTTP` and `HTTPS` connection by adding few configuration to eventlistener.
+
+To setup TLS connection add two set of reserved environment variables `TLS_CERT` and `TLS_KEY` using `secretKeyRef` env type 
+where we need to specify the `secret` which contains `cert` and `key` files. See the full [example](../examples/eventlistener-tls-connection/README.md) for more details.
+
+Refer [TEP-0027](https://github.com/tektoncd/community/blob/master/teps/0027-https-connection-to-triggers-eventlistener.md) for more information on design and user stories.
+
+## EventListener Response Format
+
+```
+kubectl get el
+NAME                       ADDRESS                                                             AVAILABLE   REASON                     READY   REASON
+tls-listener-interceptor   http://el-tls-listener-interceptor.default.svc.cluster.local        True        MinimumReplicasAvailable
+```
+Where
+
+* **NAME:** Name of the created eventlistener
+* **ADDRESS:** Address of the eventlistener
+* **AVAILABLE** This state indicates readiness of Kubernetes Deployment and Service
+* **REASON** Shows the failure reason for Kubernetes Deployment and Service
+* **READY** This state indicates readiness of Custom Resource ex: Knative Service
+* **REASON** Shows the failure reason for Custom Resource
+
+**Note:** The response format will be refactored as part of [issue-932](https://github.com/tektoncd/triggers/issues/932)

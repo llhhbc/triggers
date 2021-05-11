@@ -7,7 +7,7 @@ spec:
   params:
     - name: gitrevision
       description: The git revision
-      default: master
+      default: main
     - name: gitrepositoryurl
       description: The git repository url
     - name: namespace
@@ -16,10 +16,10 @@ spec:
     - apiVersion: tekton.dev/v1beta1
       kind: PipelineRun
       metadata:
-        name: getting-started-pipeline-run-$(uid)
-        namespace: $(params.namespace)
+        generateName: getting-started-pipeline-run-
+        namespace: $(tt.params.namespace)
       spec:
-        serviceAccountName: tekton-triggers-admin
+        serviceAccountName: tekton-triggers-example-sa
         pipelineRef:
           name: getting-started-pipeline
         resources:
@@ -28,15 +28,15 @@ spec:
               type: git
               params:
               - name: revision
-                value: $(params.gitrevision)
+                value: $(tt.params.gitrevision)
               - name: url
-                value: $(params.gitrepositoryurl)
+                value: $(tt.params.gitrepositoryurl)
           - name: image-source
             resourceSpec:
               type: image
               params:
                 - name: url
-                  value: DOCKERREPO-REPLACEME  # docker-repo-location.com/repo:getting-started
+                  value: DOCKERREPO-REPLACEME # docker-repo-location.com/repo:getting-started
           - name: event-to-sink
             resourceSpec:
               type: cloudEvent
@@ -64,9 +64,9 @@ metadata:
   name: getting-started-listener
   namespace: getting-started
 spec:
-  serviceAccountName: tekton-triggers-admin
+  serviceAccountName: tekton-triggers-example-sa
   triggers:
     - bindings:
-      - name: getting-started-pipelinebinding
+      - ref: getting-started-pipelinebinding
       template:
-        name: getting-started-triggertemplate
+        ref: getting-started-triggertemplate

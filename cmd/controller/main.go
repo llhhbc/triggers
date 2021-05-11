@@ -16,8 +16,15 @@ limitations under the License.
 package main
 
 import (
-	"k8s.io/klog"
+	"flag"
+	"os"
+
+	"github.com/tektoncd/triggers/pkg/reconciler/v1alpha1/clusterinterceptor"
+
+	corev1 "k8s.io/api/core/v1"
+	"knative.dev/pkg/injection"
 	"knative.dev/pkg/injection/sharedmain"
+	"knative.dev/pkg/signals"
 
 	"github.com/tektoncd/triggers/pkg/reconciler/v1alpha1/eventlistener"
 )
@@ -27,9 +34,44 @@ const (
 	ControllerLogKey = "controller"
 )
 
+var (
+	image              = flag.String("el-image", eventlistener.DefaultImage, "The container image for the EventListener Pod.")
+	port               = flag.Int("el-port", eventlistener.DefaultPort, "The container port for the EventListener to listen on.")
+	setSecurityContext = flag.Bool("el-security-context", eventlistener.DefaultSetSecurityContext, "Add a security context to the event listener deployment.")
+	readTimeOut        = flag.Int64("el-readtimeout", eventlistener.DefaultReadTimeout, "The read timeout for EventListener Server.")
+	writeTimeOut       = flag.Int64("el-writetimeout", eventlistener.DefaultWriteTimeout, "The write timeout for EventListener Server.")
+	idleTimeOut        = flag.Int64("el-idletimeout", eventlistener.DefaultIdleTimeout, "The idle timeout for EventListener Server.")
+	timeOutHandler     = flag.Int64("el-timeouthandler", eventlistener.DefaultTimeOutHandler, "The timeout for Timeout Handler of EventListener Server.")
+	periodSeconds      = flag.Int("period-seconds", eventlistener.DefaultPeriodSeconds, "The Period Seconds for the EventListener Liveness and Readiness Probes.")
+	failureThreshold   = flag.Int("failure-threshold", eventlistener.DefaultFailureThreshold, "The Failure Threshold for the EventListener Liveness and Readiness Probes.")
+
+	staticResourceLabels = eventlistener.DefaultStaticResourceLabels
+	systemNamespace      = os.Getenv("SYSTEM_NAMESPACE")
+)
+
 func main() {
-	klog.InitFlags(nil)
-	sharedmain.Main(ControllerLogKey,
-		eventlistener.NewController,
+	cfg := sharedmain.ParseAndGetConfigOrDie()
+
+	c := eventlistener.Config{
+		Image:              image,
+		Port:               port,
+		SetSecurityContext: setSecurityContext,
+		ReadTimeOut:        readTimeOut,
+		WriteTimeOut:       writeTimeOut,
+		IdleTimeOut:        idleTimeOut,
+		TimeOutHandler:     timeOutHandler,
+		PeriodSeconds:      periodSeconds,
+		FailureThreshold:   failureThreshold,
+
+		StaticResourceLabels: staticResourceLabels,
+		SystemNamespace:      systemNamespace,
+	}
+
+	sharedmain.MainWithConfig(
+		injection.WithNamespaceScope(signals.NewContext(), corev1.NamespaceAll),
+		ControllerLogKey,
+		cfg,
+		eventlistener.NewController(c),
+		clusterinterceptor.NewController(),
 	)
 }

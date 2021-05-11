@@ -39,8 +39,14 @@ type PipelineSpec struct {
 	// Workspaces declares a set of named workspaces that are expected to be
 	// provided by a PipelineRun.
 	// +optional
-	Workspaces []WorkspacePipelineDeclaration `json:"workspaces,omitempty"`
+	Workspaces []PipelineWorkspaceDeclaration `json:"workspaces,omitempty"`
+	// Results are values that this pipeline can output once run
+	// +optional
+	Results []PipelineResult `json:"results,omitempty"`
 }
+
+// PipelineResult used to describe the results of a pipeline
+type PipelineResult = v1beta1.PipelineResult
 
 // Check that Pipeline may be validated and defaulted.
 // TaskKind defines the type of Task used by the pipeline.
@@ -91,7 +97,7 @@ func (p *Pipeline) PipelineSpec() PipelineSpec {
 	return p.Spec
 }
 
-func (p *Pipeline) Copy() PipelineInterface {
+func (p *Pipeline) Copy() PipelineObject {
 	return p.DeepCopy()
 }
 
@@ -193,6 +199,14 @@ func (l PipelineTaskList) Items() []dag.Task {
 		tasks = append(tasks, dag.Task(t))
 	}
 	return tasks
+}
+
+func (l PipelineTaskList) Deps() map[string][]string {
+	deps := map[string][]string{}
+	for _, pt := range l {
+		deps[pt.HashKey()] = pt.Deps()
+	}
+	return deps
 }
 
 // PipelineTaskParam is used to provide arbitrary string parameters to a Task.
